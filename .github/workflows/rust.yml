@@ -76,3 +76,33 @@ jobs:
         run: make doc
         env:
           RUSTDOCFLAGS: -D warnings
+
+  nightly-check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v3
+        with:
+          submodules: recursive
+
+      - name: Install latest nightly
+        uses: actions-rs/toolchain@v1
+        with:
+            toolchain: nightly
+            target: x86_64-unknown-none
+            profile: minimal
+            override: true
+            components: rustfmt
+
+      # The bindings.rs is auto-generated during make, but we are not
+      # building the code with nightly. So we initialize bindings.rs here
+      # for cargo-fmt in the next workflow, otherwise it will fail reporting
+      # that bindings.rs does not exist.
+      - name: Touch libmstpm bindings
+        run: echo "" > libmstpm/src/bindings.rs
+
+      - name: Format doctests
+        uses: actions-rs/cargo@v1
+        with:
+          command: fmt
+          args: --all -- --check --config "format_code_in_doc_comments=true"
