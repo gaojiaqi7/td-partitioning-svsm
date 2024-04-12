@@ -38,11 +38,12 @@ libmstpm = { workspace = true, optional = true }
 test.workspace = true
 
 [features]
-default = ["mstpm"]
+default = ["mstpm", "mstpm_crb"]
 default-test = []
 enable-gdb = ["dep:gdbstub", "dep:gdbstub_arch"]
 fuzzing-hooks = []
 mstpm = ["dep:libmstpm"]
+mstpm_crb = []
 
 [dev-dependencies]
 memoffset.workspace = true
