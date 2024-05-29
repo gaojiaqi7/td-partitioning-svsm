@@ -10,6 +10,7 @@
 /// TPM 2.0 Reference Implementation by Microsoft
 pub mod mstpm;
 pub mod ptp;
+pub mod tpm_cmd;
 
 use crate::vtpm::mstpm::MsTpm as Vtpm;
 use crate::{locking::LockGuard, protocols::vtpm::TpmPlatformCommand};
