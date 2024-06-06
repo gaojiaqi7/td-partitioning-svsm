@@ -70,4 +70,8 @@ pub enum TdxError {
     VpWR(u64, u64),
     // Write Guest Memory failed
     WriteGuestMem,
+    // Fail to get TDX report
+    GetReport,
+    // Fail to get quote
+    Attestation,
 }
