@@ -55,7 +55,7 @@ use svsm::types::{PageSize, GUEST_VMPL, PAGE_SIZE};
 use svsm::utils::{halt, immut_after_init::ImmutAfterInitCell, zero_mem_region};
 #[cfg(feature = "mstpm_crb")]
 use svsm::vtpm;
-#[cfg(feature = "mstpm")]
+#[cfg(all(feature = "mstpm", not(feature = "mstpm_crb")))]
 use svsm::vtpm::vtpm_init;
 
 use svsm::mm::validate::{init_valid_bitmap_ptr, migrate_valid_bitmap};
@@ -505,7 +505,7 @@ pub extern "C" fn svsm_main() {
     vtpm_init().expect("vTPM failed to initialize");
 
     #[cfg(feature = "mstpm_crb")]
-    vtpm::ptp::vtpm_init();
+    vtpm::ptp::vtpm_init().expect("vTPM PTP failed to initialize");
 
     virt_log_usage();
 
