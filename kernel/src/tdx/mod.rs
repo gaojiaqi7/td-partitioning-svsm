@@ -6,6 +6,7 @@
 
 pub mod error;
 
+mod attestation;
 mod gctx;
 mod gmem;
 mod instr_emul;
@@ -31,6 +32,7 @@ mod vmcs_lib;
 mod vmexit;
 mod vmsr;
 
+pub use attestation::quote_generation;
 pub use measurement::extend_svsm_version;
 pub use percpu::{run_tdpvp, TdPerCpu};
 pub use tdcall::{
