@@ -2,11 +2,12 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
+use crate::error::SvsmError;
 use crate::vtpm::tpm_cmd::tpm2_command::Tpm2CommandHeader;
 use crate::vtpm::tpm_cmd::tpm2_digests::Tpm2Digests;
 use crate::vtpm::tpm_cmd::tpm2_digests::MAX_TPM2_DIGESTS_SIZE;
-use crate::vtpm::tpm_cmd::{VtpmError, VtpmResult};
 use crate::vtpm::tpm_cmd::{TPM2_COMMAND_HEADER_SIZE, TPM_ST_SESSIONS};
+use crate::vtpm::TpmError;
 
 /// TPM PcrExtend
 /// vTPM platform commands (SVSM spec, section 8.1 - SVSM_VTPM_QUERY)
@@ -38,7 +39,7 @@ pub fn tpm2_pcr_extend_cmd(
     digests: &Tpm2Digests,
     pcr_index: u32,
     tpm_command: &mut [u8; MAX_TPM_PCR_EXTEND_CMD_SIZE],
-) -> VtpmResult<usize> {
+) -> Result<usize, SvsmError> {
     let mut tpm_cmd: [u8; MAX_TPM_PCR_EXTEND_CMD_SIZE] = [0u8; MAX_TPM_PCR_EXTEND_CMD_SIZE];
     let digests_count = digests.digests_count as u32;
 
@@ -49,13 +50,13 @@ pub fn tpm2_pcr_extend_cmd(
         + digests.total_size) as u32;
 
     if tpm_cmd_size > MAX_TPM_PCR_EXTEND_CMD_SIZE as u32 {
-        return Err(VtpmError::InvalidParameter);
+        return Err(SvsmError::Tpm(TpmError::TpmCommands));
     }
 
     let mut digests_value_buffer: [u8; MAX_TPM2_DIGESTS_SIZE] = [0; MAX_TPM2_DIGESTS_SIZE];
     let digests_value = digests.to_bytes(&mut digests_value_buffer);
     if digests_value.is_none() {
-        return Err(VtpmError::InvalidParameter);
+        return Err(SvsmError::Tpm(TpmError::TpmCommands));
     }
 
     let cmd_header = Tpm2CommandHeader::new(TPM_ST_SESSIONS, tpm_cmd_size, TPM_CC_PCR_EXTEND);

@@ -16,6 +16,13 @@ use crate::vtpm::mstpm::MsTpm as Vtpm;
 use crate::{locking::LockGuard, protocols::vtpm::TpmPlatformCommand};
 use crate::{locking::SpinLock, protocols::errors::SvsmReqError};
 
+#[derive(Clone, Copy, Debug)]
+pub enum TpmError {
+    TpmEmulator,
+    TpmCrb,
+    TpmCommands,
+}
+
 /// Basic services required to perform the VTPM Protocol
 pub trait VtpmProtocolInterface {
     /// Get the list of Platform Commands supported by the TPM implementation.
