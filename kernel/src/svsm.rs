@@ -50,6 +50,7 @@ use svsm::sev::{init_hypervisor_ghcb_features, secrets_page, secrets_page_mut, s
 use svsm::svsm_console::{SVSMIOPort, SVSMTdIOPort};
 use svsm::svsm_paging::{init_page_table, invalidate_early_boot_memory};
 use svsm::task::{create_kernel_task, schedule_init, TASK_FLAG_SHARE_PT};
+use svsm::tdx::extend_svsm_version;
 use svsm::tdx::run_tdpvp;
 use svsm::types::{PageSize, GUEST_VMPL, PAGE_SIZE};
 use svsm::utils::{halt, immut_after_init::ImmutAfterInitCell, zero_mem_region};
@@ -506,6 +507,8 @@ pub extern "C" fn svsm_main() {
 
     #[cfg(feature = "mstpm_crb")]
     vtpm::ptp::vtpm_init().expect("vTPM PTP failed to initialize");
+
+    extend_svsm_version();
 
     virt_log_usage();
 
