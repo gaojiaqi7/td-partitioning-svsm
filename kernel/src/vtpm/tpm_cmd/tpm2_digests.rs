@@ -3,8 +3,9 @@
 // SPDX-License-Identifier: Apache-2.0
 
 extern crate alloc;
-use crate::vtpm::tpm_cmd::{VtpmError, VtpmResult};
 use alloc::vec::Vec;
+
+use crate::{error::SvsmError, vtpm::TpmError};
 
 pub const TPM2_HASH_ALG_ID_SHA1: u16 = 0x4;
 pub const TPM2_HASH_ALG_ID_SHA256: u16 = 0xb;
@@ -95,10 +96,10 @@ impl Tpm2Digests {
         }
     }
 
-    pub fn push_digest(&mut self, digest: &Tpm2Digest) -> VtpmResult {
+    pub fn push_digest(&mut self, digest: &Tpm2Digest) -> Result<(), SvsmError> {
         let hash_size = Tpm2Digest::get_hash_size(digest.alg_id);
         if hash_size.is_none() {
-            return Err(VtpmError::InvalidParameter);
+            return Err(SvsmError::Tpm(TpmError::TpmCommands));
         }
 
         self.digests.push(*digest);

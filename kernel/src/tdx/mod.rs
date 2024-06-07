@@ -32,8 +32,8 @@ mod vmcs_lib;
 mod vmexit;
 mod vmsr;
 
-pub use measurement::extend_svsm_version;
 pub use attestation::quote_generation;
+pub use measurement::tdx_tpm_measurement_init;
 pub use percpu::{run_tdpvp, TdPerCpu};
 pub use tdcall::{
     td_accept_memory, td_shared_mask, tdcall_get_ve_info, tdvmcall_cpuid, tdvmcall_halt,

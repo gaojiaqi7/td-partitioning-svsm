@@ -74,4 +74,6 @@ pub enum TdxError {
     GetReport,
     // Fail to get quote
     Attestation,
+    // TPM/RTMR measurements error
+    Measurement,
 }

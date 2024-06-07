@@ -4,8 +4,7 @@
 
 use core::convert::{Into, TryFrom};
 
-use crate::vtpm::tpm_cmd::VtpmError;
-
+use crate::error::SvsmError;
 use crate::vtpm::tpm_cmd::{TPM2_COMMAND_HEADER_SIZE, TPM2_RESPONSE_HEADER_SIZE};
 
 #[derive(Debug, PartialEq, Copy, Clone)]
@@ -26,9 +25,9 @@ impl Tpm2CommandHeader {
 }
 
 impl TryFrom<[u8; TPM2_COMMAND_HEADER_SIZE]> for Tpm2CommandHeader {
-    type Error = VtpmError;
+    type Error = SvsmError;
 
-    fn try_from(bytes: [u8; TPM2_COMMAND_HEADER_SIZE]) -> Result<Self, VtpmError> {
+    fn try_from(bytes: [u8; TPM2_COMMAND_HEADER_SIZE]) -> Result<Self, SvsmError> {
         let tag = u16::from_be_bytes([bytes[0], bytes[1]]);
         let param_size = u32::from_be_bytes([bytes[2], bytes[3], bytes[4], bytes[5]]);
         let command_code = u32::from_be_bytes([bytes[6], bytes[7], bytes[8], bytes[9]]);
@@ -66,9 +65,9 @@ pub struct Tpm2ResponseHeader {
 }
 
 impl TryFrom<[u8; TPM2_RESPONSE_HEADER_SIZE]> for Tpm2ResponseHeader {
-    type Error = VtpmError;
+    type Error = SvsmError;
 
-    fn try_from(bytes: [u8; TPM2_RESPONSE_HEADER_SIZE]) -> Result<Self, VtpmError> {
+    fn try_from(bytes: [u8; TPM2_RESPONSE_HEADER_SIZE]) -> Result<Self, SvsmError> {
         let tag = u16::from_be_bytes([bytes[0], bytes[1]]);
         let param_size = u32::from_be_bytes([bytes[2], bytes[3], bytes[4], bytes[5]]);
         let response_code = u32::from_be_bytes([bytes[6], bytes[7], bytes[8], bytes[9]]);
