@@ -34,14 +34,18 @@ bitfield-struct.workspace = true
 
 libmstpm = { workspace = true, optional = true }
 sha2 = { workspace = true, optional = true }
+sha1 = { workspace = true, optional = true  }
 zerocopy = { workspace = true, optional = true }
 cc-measurement = { workspace = true }
+der = { workspace = true}
+spin = { workspace = true}
+zeroize = { workspace = true}
 
 [target."x86_64-unknown-none".dev-dependencies]
 test.workspace = true
 
 [features]
-default = ["mstpm", "mstpm_crb", "sha2"]
+default = ["mstpm", "mstpm_crb", "sha2", "sha1"]
 default-test = []
 enable-gdb = ["dep:gdbstub", "dep:gdbstub_arch"]
 fuzzing-hooks = []

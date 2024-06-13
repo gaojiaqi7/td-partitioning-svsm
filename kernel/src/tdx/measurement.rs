@@ -1,15 +1,12 @@
-// Copyright (c) 2022 - 2023 Intel Corporation
+// Copyright (c) 2022 - 2024 Intel Corporation
 //
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: MIT OR Apache-2.0
 
 extern crate alloc;
 use crate::mm::alloc::{allocate_page, free_page};
 use alloc::boxed::Box;
 use alloc::string::String;
 use alloc::vec::Vec;
-use cc_measurement::EV_EFI_PLATFORM_FIRMWARE_BLOB2;
-
-use core::str::FromStr;
 
 use super::tdvf::get_tdvf_bfv;
 use crate::address::PhysAddr;
@@ -30,8 +27,13 @@ use crate::vtpm::{vtpm_get_locked, MsTpmSimulatorInterface, TpmError};
 use cc_measurement::log::{CcEventLogError, CcEventLogReader, CcEventLogWriter};
 use cc_measurement::{CcEventHeader, TcgPcrEventHeader};
 use core::mem::size_of;
+
 const SHA384_DIGEST_SIZE: usize = 48;
+use crate::crypto_ek::ek_cert::{generate_ca_cert, generate_ek_cert};
+use crate::tdx::quote_generation;
 use crate::tdx::{tdcall_extend_rtmr, TdxDigest};
+use crate::vtpm::crypto::{create_ecdsa_signing_key, EcdsaSigningKey};
+use crate::vtpm::ek::create_tpm_ek;
 
 #[cfg(feature = "sha2")]
 use sha2::{Digest, Sha384};
@@ -222,6 +224,9 @@ pub fn tdx_tpm_measurement_init() -> Result<(), SvsmError> {
     // Then extend the Separator to RTMR[0~3]
     let event_log_buf = extend_separator()?;
 
+    // Then generate ek cert
+    generate_cert(event_log_buf.as_slice())?;
+
     // Finally extend the TDVF code FV into PCR[0]
     extend_tdvf_image()
 }
@@ -270,12 +275,47 @@ pub fn extend_separator() -> Result<Vec<u8>, SvsmError> {
     let mut writer = CcEventLogWriter::new(&mut event_log_buf, Box::new(extend_rtmr))
         .expect("Failed to create and initialize the event log");
     create_separator(&mut writer).map_err(|_| SvsmError::Tdx(TdxError::Measurement))?;
-    free_page(page);
 
     // Get event log size
     let event_log_size =
         event_log_size(&event_log_buf[..]).ok_or(SvsmError::Tdx(TdxError::Measurement))?;
     let event_log = event_log_buf[..event_log_size].to_vec();
 
+    free_page(page);
     Ok(event_log)
+}
+
+pub fn generate_cert(event_log: &[u8]) -> Result<(), SvsmError> {
+    let mut ek_pub = create_tpm_ek()?;
+    let mut ecdsa_keypair = create_ecdsa_signing_key()?;
+
+    let mut quote_buf = alloc::vec![0u8; PAGE_SIZE*2];
+    let mut ecdsa_pub_sha384 = [0u8; TPM2_SHA384_SIZE];
+    hash_sha384(ecdsa_keypair.public_key.as_slice(), &mut ecdsa_pub_sha384)?;
+
+    let td_quote_len = quote_generation(&ecdsa_pub_sha384, &mut quote_buf)?;
+    let td_quote = &quote_buf[..td_quote_len];
+
+    // log::info!("eventlog len {:?} = {:02X?}", event_log.len(), &event_log);
+    log::info!("td_quote len {:?} = {:02X?}", td_quote.len(), &td_quote);
+
+    // create ca cert
+    let ca_cert = generate_ca_cert(td_quote, event_log, &ecdsa_keypair)
+        .map_err(|_| SvsmError::Tdx(TdxError::Measurement))?;
+    log::info!(
+        "ca_cert len {:?} = {:02X?}",
+        ca_cert.as_slice().len(),
+        ca_cert.as_slice()
+    );
+
+    // create ek cert
+    let ek_cert = generate_ek_cert(ek_pub.as_slice(), &ecdsa_keypair)
+        .map_err(|_| SvsmError::Tdx(TdxError::Measurement))?;
+    log::info!(
+        "ek_cert len {:?} = {:02X?}",
+        ek_cert.as_slice().len(),
+        ek_cert.as_slice()
+    );
+
+    Ok(())
 }

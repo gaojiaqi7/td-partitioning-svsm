@@ -16,6 +16,7 @@ pub mod config;
 pub mod console;
 pub mod cpu;
 pub mod crypto;
+pub mod crypto_ek;
 pub mod debug;
 pub mod elf;
 pub mod error;

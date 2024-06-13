@@ -15,7 +15,7 @@ pub const TPM2_HASH_ALG_ID_SHA512: u16 = 0xd;
 pub const TPM2_SUPPORTED_HASH_COUNT: usize = 4;
 pub const MAX_TPM2_DIGESTS_SIZE: usize = (MAX_TPM2_HASH_SIZE + 2) * TPM2_SUPPORTED_HASH_COUNT;
 
-pub const TPM2_SHA1_SIZE: usize = 16;
+pub const TPM2_SHA1_SIZE: usize = 20;
 pub const TPM2_SHA256_SIZE: usize = 32;
 pub const TPM2_SHA384_SIZE: usize = 48;
 pub const TPM2_SHA512_SIZE: usize = 64;
