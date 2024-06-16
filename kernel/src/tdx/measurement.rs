@@ -181,7 +181,7 @@ fn extend_tdvf_image() -> Result<(), SvsmError> {
     let mut digest = [0u8; TPM2_SHA384_SIZE];
     hash_sha384(mem, &mut digest)?;
     let tpm2_digest = Tpm2Digest::new(TPM2_HASH_ALG_ID_SHA384, &digest[..])
-        .ok_or(SvsmError::Tpm(TpmError::TpmCommands))?;
+        .ok_or(SvsmError::Tpm(TpmError::Unexpected))?;
     let mut digests = Tpm2Digests::new();
     digests.push_digest(&tpm2_digest)?;
 
