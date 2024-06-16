@@ -99,7 +99,7 @@ impl Tpm2Digests {
     pub fn push_digest(&mut self, digest: &Tpm2Digest) -> Result<(), SvsmError> {
         let hash_size = Tpm2Digest::get_hash_size(digest.alg_id);
         if hash_size.is_none() {
-            return Err(SvsmError::Tpm(TpmError::TpmCommands));
+            return Err(SvsmError::Tpm(TpmError::Unexpected));
         }
 
         self.digests.push(*digest);

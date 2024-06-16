@@ -7,6 +7,11 @@
 //! This crate defines the Virtual TPM interfaces and shows what
 //! TPM backends are supported
 
+extern crate alloc;
+
+pub mod capability;
+pub mod crypto;
+pub mod ek;
 /// TPM 2.0 Reference Implementation by Microsoft
 pub mod mstpm;
 pub mod ptp;
@@ -20,7 +25,9 @@ use crate::{locking::SpinLock, protocols::errors::SvsmReqError};
 pub enum TpmError {
     TpmEmulator,
     TpmCrb,
-    TpmCommands,
+    TpmCommands(u32),
+    EndorsementKey,
+    Unexpected,
 }
 
 /// Basic services required to perform the VTPM Protocol
