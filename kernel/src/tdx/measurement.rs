@@ -2,6 +2,13 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
+extern crate alloc;
+use crate::mm::alloc::{allocate_page, free_page};
+use alloc::boxed::Box;
+use alloc::string::String;
+use alloc::vec::Vec;
+use cc_measurement::EV_EFI_PLATFORM_FIRMWARE_BLOB2;
+
 use core::str::FromStr;
 
 use super::tdvf::get_tdvf_bfv;
@@ -19,6 +26,12 @@ use crate::vtpm::tpm_cmd::{
     TPM2_COMMAND_HEADER_SIZE, TPM2_RESPONSE_HEADER_SIZE, TPM_RC_SUCCESS, TPM_STARTUP_CMD,
 };
 use crate::vtpm::{vtpm_get_locked, MsTpmSimulatorInterface, TpmError};
+
+use cc_measurement::log::{CcEventLogError, CcEventLogReader, CcEventLogWriter};
+use cc_measurement::{CcEventHeader, TcgPcrEventHeader};
+use core::mem::size_of;
+const SHA384_DIGEST_SIZE: usize = 48;
+use crate::tdx::{tdcall_extend_rtmr, TdxDigest};
 
 #[cfg(feature = "sha2")]
 use sha2::{Digest, Sha384};
@@ -61,6 +74,8 @@ impl RtmMeasurementState {
         &mut self.state[self.size..]
     }
 }
+
+pub const EV_SEPARATOR: u32 = 0x0000_0004;
 
 fn hash_sha384(
     hash_data: &[u8],
@@ -137,7 +152,7 @@ fn tpm_extend(digests: &Tpm2Digests) -> Result<(), SvsmError> {
 }
 
 pub fn extend_svsm_version() -> Result<(), SvsmError> {
-    let version = env!("CARGO_PKG_VERSION");
+    let version = String::from(env!("CARGO_PKG_VERSION")) + "\0";
     let mut svsm_version_digests = Tpm2Digests::new();
     let mut digest_sha384 = [0u8; TPM2_SHA384_SIZE];
 
@@ -204,6 +219,63 @@ pub fn tdx_tpm_measurement_init() -> Result<(), SvsmError> {
     // Then extend the SVSM version into PCR[0]
     extend_svsm_version()?;
 
+    // Then extend the Separator to RTMR[0~3]
+    let event_log_buf = extend_separator()?;
+
     // Finally extend the TDVF code FV into PCR[0]
     extend_tdvf_image()
+}
+
+pub fn extend_rtmr(data: &[u8; SHA384_DIGEST_SIZE], mr_index: u32) -> Result<(), CcEventLogError> {
+    let digest = TdxDigest { data: *data };
+
+    let rtmr_index = match mr_index {
+        1 | 2 | 3 | 4 => mr_index - 1,
+        e => return Err(CcEventLogError::InvalidMrIndex(e)),
+    };
+    tdcall_extend_rtmr(&digest, rtmr_index).map_err(|_| CcEventLogError::ExtendMr)
+}
+
+pub fn create_separator(cc_event_log: &mut CcEventLogWriter<'_>) -> Result<(), CcEventLogError> {
+    let separator = u32::to_le_bytes(0);
+
+    // Measure 0x0000_0000 into RTMR[0] RTMR[1] RTMR[2] RTMR[3]
+    let _ = cc_event_log.create_event_log(1, EV_SEPARATOR, &[&separator], &separator)?;
+    let _ = cc_event_log.create_event_log(2, EV_SEPARATOR, &[&separator], &separator)?;
+    let _ = cc_event_log.create_event_log(3, EV_SEPARATOR, &[&separator], &separator)?;
+    let _ = cc_event_log.create_event_log(4, EV_SEPARATOR, &[&separator], &separator)?;
+    Ok(())
+}
+
+fn event_log_size(event_log: &[u8]) -> Option<usize> {
+    let reader = CcEventLogReader::new(event_log)?;
+
+    // The first event is TCG_EfiSpecIDEvent with TcgPcrEventHeader
+    let mut size = size_of::<TcgPcrEventHeader>() + reader.pcr_event_header.event_size as usize;
+
+    for (header, _) in reader.cc_events {
+        size += size_of::<CcEventHeader>() + header.event_size as usize;
+    }
+
+    Some(size)
+}
+
+pub fn extend_separator() -> Result<Vec<u8>, SvsmError> {
+    let page = allocate_page().expect("Failed to allocate Eventlog page");
+
+    let mut event_log_buf =
+        unsafe { core::slice::from_raw_parts_mut(page.as_mut_ptr(), PAGE_SIZE) };
+    event_log_buf.fill(0xff);
+
+    let mut writer = CcEventLogWriter::new(&mut event_log_buf, Box::new(extend_rtmr))
+        .expect("Failed to create and initialize the event log");
+    create_separator(&mut writer).map_err(|_| SvsmError::Tdx(TdxError::Measurement))?;
+    free_page(page);
+
+    // Get event log size
+    let event_log_size =
+        event_log_size(&event_log_buf[..]).ok_or(SvsmError::Tdx(TdxError::Measurement))?;
+    let event_log = event_log_buf[..event_log_size].to_vec();
+
+    Ok(event_log)
 }

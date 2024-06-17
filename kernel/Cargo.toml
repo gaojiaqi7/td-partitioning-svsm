@@ -33,7 +33,9 @@ lazy_static.workspace = true
 bitfield-struct.workspace = true
 
 libmstpm = { workspace = true, optional = true }
-sha2 = { version = "0.10.6", default-features = false, features = ["force-soft"], optional = true }
+sha2 = { workspace = true, optional = true }
+zerocopy = { workspace = true, optional = true }
+cc-measurement = { workspace = true }
 
 [target."x86_64-unknown-none".dev-dependencies]
 test.workspace = true

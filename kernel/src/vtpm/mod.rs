@@ -7,8 +7,6 @@
 //! This crate defines the Virtual TPM interfaces and shows what
 //! TPM backends are supported
 
-extern crate alloc;
-
 pub mod capability;
 pub mod crypto;
 pub mod ek;
