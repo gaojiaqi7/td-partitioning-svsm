@@ -11,6 +11,10 @@
 //! TDVMCALL (TDG.VP.VMCALL) is a leaf function 0 for TDCALL. It helps invoke services from
 //! the host VMM.
 
+use crate::address::{Address, VirtAddr};
+use crate::mm::alloc::{allocate_page, free_page};
+use crate::mm::{virt_to_phys, PAGE_SIZE};
+
 use super::*;
 use core::arch::asm;
 use core::result::Result;
@@ -25,6 +29,7 @@ const PAGE_SIZE_2M: u64 = 2 * 1024 * 1024;
 /// SHA384 digest value extended to RTMR
 /// Both alignment and size are 64 bytes.
 #[repr(C, align(64))]
+#[derive(Debug, PartialEq, Copy, Clone)]
 pub struct TdxDigest {
     pub data: [u8; 48],
 }
@@ -459,11 +464,14 @@ pub fn tdcall_get_td_info() -> Result<TdInfo, TdCallError> {
 ///
 /// Details can be found in TDX Module ABI spec section 'TDG.VP.INFO Leaf'
 pub fn tdcall_extend_rtmr(digest: &TdxDigest, mr_index: u32) -> Result<(), TdCallError> {
-    let buffer: u64 = core::ptr::addr_of!(digest.data) as u64;
-
+    let mut page = allocate_page().expect("Failed to allocate memory page");
+    let mut slice: &mut [u8] =
+        unsafe { core::slice::from_raw_parts_mut(page.as_mut_ptr(), PAGE_SIZE) };
+    slice[..digest.data.len()].copy_from_slice(&digest.data);
+    let buffer = virt_to_phys(page);
     let mut args = TdcallArgs {
         rax: TDCALL_TDEXTENDRTMR,
-        rcx: buffer,
+        rcx: buffer.bits() as u64,
         rdx: mr_index as u64,
         ..Default::default()
     };
@@ -473,7 +481,7 @@ pub fn tdcall_extend_rtmr(digest: &TdxDigest, mr_index: u32) -> Result<(), TdCal
     if ret != TDCALL_STATUS_SUCCESS {
         return Err(ret.into());
     }
-
+    free_page(page);
     Ok(())
 }
 

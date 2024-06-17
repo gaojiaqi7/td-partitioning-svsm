@@ -37,7 +37,7 @@ pub use attestation::quote_generation;
 pub use measurement::tdx_tpm_measurement_init;
 pub use percpu::{run_tdpvp, TdPerCpu};
 pub use tdcall::{
-    td_accept_memory, td_shared_mask, tdcall_get_ve_info, tdvmcall_cpuid, tdvmcall_halt,
-    tdvmcall_io_read_16, tdvmcall_io_read_8, tdvmcall_io_write_16, tdvmcall_io_write_8,
-    tdvmcall_rdmsr, tdvmcall_wrmsr, TdVmcallError,
+    td_accept_memory, td_shared_mask, tdcall_extend_rtmr, tdcall_get_ve_info, tdvmcall_cpuid,
+    tdvmcall_halt, tdvmcall_io_read_16, tdvmcall_io_read_8, tdvmcall_io_write_16,
+    tdvmcall_io_write_8, tdvmcall_rdmsr, tdvmcall_wrmsr, TdVmcallError, TdxDigest,
 };
