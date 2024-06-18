@@ -33,7 +33,7 @@ use crate::crypto_ek::ek_cert::{generate_ca_cert, generate_ek_cert};
 use crate::tdx::quote_generation;
 use crate::tdx::{tdcall_extend_rtmr, TdxDigest};
 use crate::vtpm::crypto::{create_ecdsa_signing_key, EcdsaSigningKey};
-use crate::vtpm::ek::create_tpm_ek;
+use crate::vtpm::ek::{create_tpm_ek, provision_ca_cert, provision_ek_cert};
 
 #[cfg(feature = "sha2")]
 use sha2::{Digest, Sha384};
@@ -311,11 +311,9 @@ pub fn generate_cert(event_log: &[u8]) -> Result<(), SvsmError> {
     // create ek cert
     let ek_cert = generate_ek_cert(ek_pub.as_slice(), &ecdsa_keypair)
         .map_err(|_| SvsmError::Tdx(TdxError::Measurement))?;
-    log::info!(
-        "ek_cert len {:?} = {:02X?}",
-        ek_cert.as_slice().len(),
-        ek_cert.as_slice()
-    );
+
+    provision_ca_cert(&ca_cert)?;
+    provision_ek_cert(&ek_cert)?;
 
     Ok(())
 }
