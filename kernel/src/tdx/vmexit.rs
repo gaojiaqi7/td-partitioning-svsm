@@ -8,6 +8,7 @@ use super::error::{ErrExcp, TdxError};
 use super::gctx::{GuestCpuContext, GuestCpuGPRegCode};
 use super::gmem::{accept_guest_mem, convert_guest_mem};
 use super::ioreq::{IoDirection, IoReq, IoType};
+use super::measurement::handle_vrtm_request;
 use super::percpu::{this_vcpu, this_vcpu_mut};
 use super::tdcall::{tdcall_get_td_info, tdvmcall_sti_halt};
 use super::tdp::this_tdp;
@@ -233,6 +234,14 @@ impl VmExit {
         ctx.set_gpreg(GuestCpuGPRegCode::Rdx, vcpuid.edx as u64);
 
         self.skip_instruction();
+    }
+
+    fn handle_vtpm(&self, request_addr: u64, request_size: u64) -> Result<(), TdxError> {
+        let gpa = GuestPhysAddr::new(request_addr as usize);
+        let aligned_gpa_start = gpa.page_align();
+        let aligned_gpa_end = (gpa + request_size as usize).page_align_up();
+        accept_guest_mem(aligned_gpa_start, aligned_gpa_end).unwrap();
+        handle_vrtm_request(gpa, request_size as usize).map_err(|_| TdxError::Measurement)
     }
 
     fn handle_hlt(&self, skip_ins: bool) {
@@ -521,6 +530,17 @@ impl VmExit {
                         ctx.set_gpreg(GuestCpuGPRegCode::R10, TDG_VP_VMCALL_INVALID_OPERAND);
                     }
                 }
+            }
+            TdVmCallLeaf::Vtpm => {
+                let request_addr = ctx.get_gpreg(GuestCpuGPRegCode::R12);
+                let request_size = ctx.get_gpreg(GuestCpuGPRegCode::R13);
+                let mut result = TDG_VP_VMCALL_INVALID_OPERAND;
+                if is_guest_phys_addr_valid(GuestPhysAddr::new(request_addr as usize)) {
+                    if self.handle_vtpm(request_addr, request_size).is_ok() {
+                        result = TDG_VP_VMCALL_SUCCESS;
+                    }
+                }
+                ctx.set_gpreg(GuestCpuGPRegCode::R10, result);
             }
             TdVmCallLeaf::Halt => {
                 self.handle_hlt(false);

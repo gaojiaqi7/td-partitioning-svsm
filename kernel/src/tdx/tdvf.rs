@@ -8,7 +8,7 @@ use core::{
 };
 
 use crate::{
-    address::PhysAddr,
+    address::{Address, PhysAddr},
     error::SvsmError,
     fw_meta::{find_table, RawMetaBuffer, Uuid},
     mm::{PerCPUPageMappingGuard, PAGE_SIZE, SIZE_1G, SIZE_1M},
@@ -18,10 +18,12 @@ use crate::{
 const OVMF_TABLE_FOOTER_GUID: &str = "96b582de-1fb2-45f7-baea-a366c55a082d";
 const OVMF_TABLE_TDX_METADATA_GUID: &str = "e47a6535-984a-4798-865e-4685a7bf8ec2";
 const TDX_METADATA_GUID: &str = "e9eaf9f3-168e-44d5-a8eB-7f4d8738f6ae";
+const SEC_FV_GUID: [u8; 16] = [
+    0x0D, 0xED, 0x3B, 0x76, 0x9F, 0xDE, 0xF5, 0x48, 0x81, 0xF1, 0x3E, 0x90, 0xE1, 0xB1, 0xA0, 0x15,
+];
 
 /// Section type for EFI Boot Firmware Volume.
 pub(crate) const TDX_METADATA_SECTION_TYPE_BFV: u32 = 0;
-pub(crate) const FIRMWARE_BLOB2_DESC: &[u8] = b"TDVF";
 
 #[repr(C, packed)]
 #[derive(Debug, Clone, Copy)]
@@ -43,62 +45,83 @@ pub struct TdxMetadataSection {
     pub attributes: u32,
 }
 
-/// Used to record the firmware blob information into event log.
-///
-/// Defined in TCG PC Client Platform Firmware Profile Specification section
-/// 'UEFI_PLATFORM_FIRMWARE_BLOB Structure Definition'
+#[repr(C)]
 #[derive(Debug)]
-pub struct UefiPlatformFirmwareBlob2 {
-    pub blob_desc_size: u8,
-    pub blob_desc: [u8; 255],
-    pub base: u64,
-    pub length: u64,
+struct FirmwareVolumeHeader {
+    zero_vector: [u8; 16],
+    file_system_guid: [u8; 16],
+    fv_length: u64,
+    signature: [u8; 4],
+    attributes: u32,
+    header_length: u16,
+    checksum: u16,
+    ext_header_offset: u16,
+    reserved: u8,
+    revision: u8,
 }
 
-impl UefiPlatformFirmwareBlob2 {
-    pub fn new(desc: &[u8], base: u64, length: u64) -> Option<Self> {
-        if desc.len() > u8::MAX as usize {
-            return None;
+fn find_sec_firmware_volume(
+    image_base: PhysAddr,
+    image_size: usize,
+) -> Result<(PhysAddr, usize), SvsmError> {
+    // Map the code region of TDVF
+    let guard = PerCPUPageMappingGuard::create(
+        image_base,
+        image_base
+            .checked_add(image_size)
+            .ok_or(SvsmError::Firmware)?,
+        0,
+    )?;
+
+    let vstart = guard.virt_addr().as_ptr::<u8>();
+
+    // Safety: we just mapped a page, so the size must hold. The type
+    // of the slice elements is `u8` so there are no alignment requirements.
+    let image: &[u8] = unsafe { core::slice::from_raw_parts(vstart, image_size) };
+    let mut offset = 0;
+    while offset < image.len() {
+        let header_start = offset;
+        let header_end = header_start + size_of::<FirmwareVolumeHeader>();
+        let fv_hdr_ptr = image
+            .get(header_start..header_end)
+            .ok_or(SvsmError::Firmware)?
+            .as_ptr()
+            .cast::<FirmwareVolumeHeader>();
+
+        // Safety: we have checked the pointer is within bounds.
+        let fvh = unsafe { fv_hdr_ptr.read() };
+        if fvh.signature == *b"_FVH" {
+            // Firmware volume header found
+            let volume_size = fvh.fv_length as usize;
+            let end_pos = header_start + volume_size;
+            if end_pos <= image.len() {
+                let volume_data = &image[header_start..end_pos];
+                if is_sec_volume(&fvh, volume_data)? {
+                    // SEC firmware volume found
+                    let sec_base = image_base
+                        .checked_add(header_start)
+                        .ok_or(SvsmError::Firmware)?;
+                    return Ok((sec_base, volume_size));
+                }
+            }
+            offset += volume_size
+        } else {
+            offset += 1;
         }
-
-        let mut fw_blob = UefiPlatformFirmwareBlob2 {
-            blob_desc_size: 0,
-            blob_desc: [0u8; 255],
-            base,
-            length,
-        };
-        fw_blob.blob_desc[..desc.len()].copy_from_slice(desc);
-        fw_blob.blob_desc_size = desc.len() as u8;
-
-        Some(fw_blob)
     }
+    Err(SvsmError::Firmware)
+}
 
-    pub fn write_in_bytes(&self, bytes: &mut [u8]) -> Option<usize> {
-        let desc_size = self.blob_desc_size as usize;
-        let mut idx = 0;
+fn is_sec_volume(fv_header: &FirmwareVolumeHeader, volume: &[u8]) -> Result<bool, SvsmError> {
+    let ext_header_offset = fv_header.ext_header_offset as usize;
 
-        // Write blob descriptor size
-        bytes[idx] = self.blob_desc_size;
-        idx = idx.checked_add(1)?;
-
-        // Write blob descriptor
-        bytes[idx..idx + desc_size].copy_from_slice(&self.blob_desc[..desc_size]);
-        idx = idx.checked_add(desc_size)?;
-
-        // Write blob base address
-        bytes[idx..idx + size_of::<u64>()].copy_from_slice(&self.base.to_le_bytes());
-        idx = idx.checked_add(size_of::<u64>())?;
-
-        // Write blob length
-        bytes[idx..idx + size_of::<u64>()].copy_from_slice(&self.length.to_le_bytes());
-        idx = idx.checked_add(size_of::<u64>())?;
-
-        Some(idx)
+    // PI Spec: The extended header is always 32-bit aligned relative to the start of
+    // the FIRMWARE VOLUME.
+    if ext_header_offset % 4 != 0 {
+        return Err(SvsmError::Firmware);
     }
-
-    pub fn size(&self) -> usize {
-        self.blob_desc_size as usize + size_of::<u64>() * 2 + size_of::<u8>()
-    }
+    let fv_name = &volume[ext_header_offset..ext_header_offset + 16];
+    Ok(fv_name == &SEC_FV_GUID)
 }
 
 // Returns the backward offset of metadata in the ROM space
@@ -142,7 +165,7 @@ fn get_metadata_offset() -> Result<u32, SvsmError> {
 }
 
 // Validate the metadata and get the basic infomation from it if any
-pub(crate) fn get_tdvf_bfv() -> Result<UefiPlatformFirmwareBlob2, SvsmError> {
+fn get_tdvf_bfv() -> Result<(PhysAddr, usize), SvsmError> {
     let offset = get_metadata_offset()?;
     let page = align_up(offset as usize + 16, PAGE_SIZE);
     if page > SIZE_1M * 2 {
@@ -215,17 +238,18 @@ pub(crate) fn get_tdvf_bfv() -> Result<UefiPlatformFirmwareBlob2, SvsmError> {
             return Err(SvsmError::Firmware);
         }
         match t {
-            TDX_METADATA_SECTION_TYPE_BFV => {
-                return UefiPlatformFirmwareBlob2::new(
-                    FIRMWARE_BLOB2_DESC,
-                    mem_addr as u64,
-                    mem_size as u64,
-                )
-                .ok_or(SvsmError::Firmware)
-            }
+            TDX_METADATA_SECTION_TYPE_BFV => return Ok((PhysAddr::new(mem_addr), mem_size)),
             _ => continue,
         }
     }
 
     Err(SvsmError::Firmware)
+}
+
+pub(crate) fn get_tdvf_sec_fv() -> Result<(PhysAddr, usize), SvsmError> {
+    // Get the BFV base and size from TDX metadata.
+    let (bfv_start, bfv_size) = get_tdvf_bfv()?;
+
+    // Find the SEC firmware volume from the BFV of TDVF
+    find_sec_firmware_volume(bfv_start, bfv_size)
 }

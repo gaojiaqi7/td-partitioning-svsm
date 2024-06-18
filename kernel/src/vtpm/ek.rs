@@ -10,7 +10,6 @@ use alloc::vec::Vec;
 use core::cell::OnceCell;
 
 use super::{
-    capability::tpm_property,
     tpm_cmd::{tpm2_nvdefine::nv_define_space, tpm2_nvwrite::nv_write, MAX_NV_INDEX_SIZE},
     TpmError,
 };

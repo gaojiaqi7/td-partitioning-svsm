@@ -2,10 +2,6 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-extern crate alloc;
-
-use alloc::vec::Vec;
-
 pub mod tpm2_command;
 pub mod tpm2_create_loaded;
 pub mod tpm2_create_primary;

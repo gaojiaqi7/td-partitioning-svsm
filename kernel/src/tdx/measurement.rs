@@ -8,10 +8,10 @@ use alloc::boxed::Box;
 use alloc::string::String;
 use alloc::vec::Vec;
 
-use super::tdvf::get_tdvf_bfv;
+use super::tdvf::get_tdvf_sec_fv;
 use crate::address::PhysAddr;
+use crate::address::{Address, GuestPhysAddr};
 use crate::error::SvsmError;
-use crate::fw_meta::Uuid;
 use crate::mm::{PerCPUPageMappingGuard, PAGE_SIZE};
 use crate::tdx::error::TdxError;
 use crate::vtpm::tpm_cmd::tpm2_command::Tpm2ResponseHeader;
@@ -38,6 +38,8 @@ use crate::vtpm::ek::{create_tpm_ek, provision_ca_cert, provision_ek_cert};
 #[cfg(feature = "sha2")]
 use sha2::{Digest, Sha384};
 
+const MAX_PLATFORM_BLOB_DESC_SIZE: usize = 255;
+const PLATFORM_BLOB_DESC: &[u8] = b"TDVF";
 pub const RTM_MEASUREMENT_STATE_SIZE: usize = 1024;
 pub const VRTM_BFV_EVENT_GUID: [u8; 16] = [
     0x9D, 0x34, 0x5B, 0x8D, 0x38, 0xC8, 0x9A, 0x41, 0xBE, 0x58, 0x99, 0xDA, 0xBA, 0xB1, 0x52, 0x64,
@@ -61,19 +63,84 @@ impl RtmMeasurementState {
         }
     }
 
-    fn write(&mut self, data: &[u8]) -> Result<(), SvsmError> {
-        let unused = self.get_unused_mut();
-        if unused.len() < data.len() {
-            return Err(SvsmError::Tdx(TdxError::Measurement));
-        }
-        unused[..data.len()].copy_from_slice(data);
-        self.size += data.len();
+    fn size(&self) -> usize {
+        self.size
+    }
 
+    fn state(&self) -> &[u8] {
+        &self.state[..self.size]
+    }
+
+    fn write(&mut self, data: &[u8]) -> Result<(), SvsmError> {
+        let unused = self.get_unused_mut(data.len())?;
+        unused[..data.len()].copy_from_slice(data);
         Ok(())
     }
 
-    fn get_unused_mut(&mut self) -> &mut [u8] {
-        &mut self.state[self.size..]
+    fn get_unused_mut(&mut self, require: usize) -> Result<&mut [u8], SvsmError> {
+        if require > RTM_MEASUREMENT_STATE_SIZE - self.size {
+            return Err(SvsmError::Tdx(TdxError::Measurement));
+        }
+        self.size += require;
+        Ok(&mut self.state[self.size - require..self.size])
+    }
+}
+
+/// Used to record the firmware blob information into event log.
+///
+/// Defined in TCG PC Client Platform Firmware Profile Specification section
+/// 'UEFI_PLATFORM_FIRMWARE_BLOB Structure Definition'
+#[derive(Debug)]
+pub struct UefiPlatformFirmwareBlob2 {
+    pub blob_desc_size: u8,
+    pub blob_desc: [u8; MAX_PLATFORM_BLOB_DESC_SIZE],
+    pub base: u64,
+    pub length: u64,
+}
+
+impl UefiPlatformFirmwareBlob2 {
+    pub fn new(desc: &[u8], base: u64, length: u64) -> Option<Self> {
+        if desc.len() > MAX_PLATFORM_BLOB_DESC_SIZE {
+            return None;
+        }
+
+        let mut fw_blob = UefiPlatformFirmwareBlob2 {
+            blob_desc_size: 0,
+            blob_desc: [0; MAX_PLATFORM_BLOB_DESC_SIZE],
+            base,
+            length,
+        };
+        fw_blob.blob_desc[..desc.len()].copy_from_slice(desc);
+        fw_blob.blob_desc_size = desc.len() as u8;
+
+        Some(fw_blob)
+    }
+
+    pub fn write_in_bytes(&self, bytes: &mut [u8]) -> Option<usize> {
+        let desc_size = self.blob_desc_size as usize;
+        let mut idx = 0;
+
+        // Write blob descriptor size
+        bytes[idx] = self.blob_desc_size;
+        idx = idx.checked_add(1)?;
+
+        // Write blob descriptor
+        bytes[idx..idx + desc_size].copy_from_slice(&self.blob_desc[..desc_size]);
+        idx = idx.checked_add(desc_size)?;
+
+        // Write blob base address
+        bytes[idx..idx + size_of::<u64>()].copy_from_slice(&self.base.to_le_bytes());
+        idx = idx.checked_add(size_of::<u64>())?;
+
+        // Write blob length
+        bytes[idx..idx + size_of::<u64>()].copy_from_slice(&self.length.to_le_bytes());
+        idx = idx.checked_add(size_of::<u64>())?;
+
+        Some(idx)
+    }
+
+    pub fn size(&self) -> usize {
+        self.blob_desc_size as usize + size_of::<u64>() * 2 + size_of::<u8>()
     }
 }
 
@@ -169,25 +236,19 @@ pub fn extend_svsm_version() -> Result<(), SvsmError> {
 
     unsafe {
         VRTM_MEASUREMENT_STATE.write(&VRTM_SVSM_VERSION_GUID)?;
+        VRTM_MEASUREMENT_STATE.write(&digest_sha384)?;
         VRTM_MEASUREMENT_STATE.write(&(version.as_bytes().len() as u32).to_le_bytes())?;
         VRTM_MEASUREMENT_STATE.write(version.as_bytes())
     }
 }
 
-fn extend_tdvf_image() -> Result<(), SvsmError> {
-    // Get the BFV of TDVF
-    let fw_blob = get_tdvf_bfv()?;
-
-    // Check if the base address of BFV is valid
-    let base = fw_blob.base;
-    let len = fw_blob.length;
-    if base & 0xfff != 0 {
-        return Err(SvsmError::Firmware);
-    }
+fn extend_tdvf_sec() -> Result<(), SvsmError> {
+    // Get the SEC Firmware Volume of TDVF
+    let (base, len) = get_tdvf_sec_fv()?;
 
     // Map the code region of TDVF
     let guard =
-        PerCPUPageMappingGuard::create(PhysAddr::from(base), PhysAddr::from(base + len), 0)?;
+        PerCPUPageMappingGuard::create(base, base.checked_add(len).ok_or(SvsmError::Firmware)?, 0)?;
 
     let vstart = guard.virt_addr().as_ptr::<u8>();
 
@@ -204,11 +265,18 @@ fn extend_tdvf_image() -> Result<(), SvsmError> {
 
     tpm_extend(&digests)?;
 
+    // Put the firmware volume information into the event
+    let fw_blob =
+        UefiPlatformFirmwareBlob2::new(PLATFORM_BLOB_DESC, base.bits() as u64, len as u64)
+            .ok_or(SvsmError::Tdx(TdxError::Measurement))?;
+
     // Record the firmware blob event
     unsafe {
         VRTM_MEASUREMENT_STATE.write(&VRTM_BFV_EVENT_GUID)?;
-        VRTM_MEASUREMENT_STATE.write(&(fw_blob.size() as u32).to_le_bytes())?;
-        fw_blob.write_in_bytes(&mut VRTM_MEASUREMENT_STATE.get_unused_mut());
+        VRTM_MEASUREMENT_STATE.write(&digest)?;
+        let fw_blob_size = fw_blob.size();
+        VRTM_MEASUREMENT_STATE.write(&(fw_blob_size as u32).to_le_bytes())?;
+        fw_blob.write_in_bytes(VRTM_MEASUREMENT_STATE.get_unused_mut(fw_blob_size)?);
     }
 
     Ok(())
@@ -228,7 +296,32 @@ pub fn tdx_tpm_measurement_init() -> Result<(), SvsmError> {
     generate_cert(event_log_buf.as_slice())?;
 
     // Finally extend the TDVF code FV into PCR[0]
-    extend_tdvf_image()
+    extend_tdvf_sec()
+}
+
+pub fn handle_vrtm_request(
+    request_addr: GuestPhysAddr,
+    request_size: usize,
+) -> Result<(), SvsmError> {
+    let guard = PerCPUPageMappingGuard::create_4k(request_addr.to_host_phys_addr())?;
+    let vstart = guard.virt_addr().as_mut_ptr::<u8>();
+
+    // Safety: we just mapped a page, so the size must hold. The type
+    // of the slice elements is `u8` so there are no alignment requirements.
+    let response = unsafe { core::slice::from_raw_parts_mut(vstart, request_size) };
+
+    unsafe {
+        let event_data_size = VRTM_MEASUREMENT_STATE.size();
+        if response.len() < event_data_size {
+            return Err(SvsmError::Tdx(TdxError::Measurement));
+        }
+        let data_start = size_of::<u32>();
+        response[..data_start].copy_from_slice(&(event_data_size as u32).to_le_bytes());
+        response[data_start..data_start + event_data_size]
+            .copy_from_slice(VRTM_MEASUREMENT_STATE.state());
+    }
+
+    Ok(())
 }
 
 pub fn extend_rtmr(data: &[u8; SHA384_DIGEST_SIZE], mr_index: u32) -> Result<(), CcEventLogError> {
