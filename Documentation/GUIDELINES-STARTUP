@@ -1,0 +1,380 @@
+Installing the COCONUT-SVSM
+===========================
+
+Installation of the COCONUT-SVSM requires some components that are not
+upstream in their respective repositories yet:
+
+* Linux host kernel with SVSM support
+* Linux guest kernel with SVSM support
+* EDK2 with SVSM support
+* A modified QEMU which supports the current SVSM launch protocol
+* The SVSM source-code repository
+
+The next sections will guide through the process of installing these
+components and running the SVSM. All steps require a Linux environment
+on the host.
+
+1 Preparing the Host
+------------------
+
+To run the SVSM a host machine with an INTEL TDX supported processor is required. Also make sure that TDX related knobs are enabled in the BIOS settings.
+
+### 1.1 Prepare Host Kernel Tree
+To use it, check out the host kernel branch:
+
+```
+$ git clone --recursive -b v6.6-tdp-vtpm https://github.com/gaojiaqi7/linux.git 
+$ cd linux
+```
+
+### 1.2 Build and Install Kernel
+Build, install and boot a kernel from that branch. For best chances of
+success use a kernel configuration provided by the distribution. On openSUSE (other
+distributions may vary) the kernel configuration can be obtained by:
+
+```
+$ gunzip -c /proc/config.gz > .config
+$ make olddefconfig
+```
+
+No additional kernel config is required comparing with TDX. Use the same kernel config with TDX as recommended here.
+```
+CONFIG_INTEL_TDX_HOST=y
+CONFIG_KVM=m
+CONFIG_KVM_INTEL=m
+```
+
+The kernel compilation process follows the standard procedure without any special requirements.
+```
+$ make -j$(nproc)
+$ sudo make modules_install
+$ sudo make install
+```
+The kernel command line should be modified with below additional options: "kvm_intel.tdx=on nohibernate", which is the same requirement as TDX.
+
+2 Building QEMU
+-------------
+
+Currently the COCONUT-SVSM uses a specific launch protocol which
+requires changes to QEMU. So a special QEMU build is needed to run the
+code.
+
+### 2.1 Prepare QEMU Tree
+First make sure to have all build requirements for QEMU installed. RPM
+and DEB based distributions provide ways to install build dependencies
+for a given package. On openSUSE the source repositories need to be
+enabled and then the packages can be installed by:
+
+```
+$ sudo zypper refresh
+$ sudo zypper si -d qemu-kvm
+```
+
+After the build dependencies are installed, clone the QEMU repository
+with the SVSM changes:
+```
+$ git clone https://gitlab.com/qemu-project/qemu.git
+$ cd qemu && git checkout -b qemu-svsm-tdp bfe8020c814a30479a4241aaa78b63960655962b
+$ mkdir series
+$ git config --local b4.midmask https://lore.kernel.org/qemu-devel/%s
+$ git config --local b4.linkmask https://lore.kernel.org/qemu-devel/%s
+```
+Download and apply series#1:
+```
+$ b4 am -o series 20240229060038.606591-1-xiaoyao.li@intel.com
+$ git am series/20240229_xiaoyao_li_confidential_guest_support_introduce_kvm_init_and_kvm_reset_virtual_functions.mbx
+```
+Download and apply series#2:
+```
+$ b4 am -o series 20240229063726.610065-1-xiaoyao.li@intel.com
+$ git am series/v5_20240229_xiaoyao_li_qemu_guest_memfd_qemu_tdx_support.mbx
+```
+Series#3 is included in the SVSM repo, so no need to download but just apply the patches:
+```
+$git clone -b svsm-tdp-patches https://github.com/intel-staging/td-partitioning-svsm.git
+$git am <TDP-patches-folder>/qemu/*\.patch
+```
+
+### 2.2 Build and Install Host QEMU
+
+Now the right branch is checked out and you can continue with the build.
+Feel free to adapt the installation directory to your needs:
+```
+$ ./configure --prefix=$HOME/bin/qemu-svsm/ --target-list=x86_64-softmmu
+$ ninja -C build/
+$ make install
+```
+
+3 Building the guest firmware
+---------------------------
+
+A special OVMF build is required to launch a guest on top of the
+COCONUT-SVSM. The changes also build on the EDK2 patches from AMD for
+linux-svsm. But these changes were re-based and enhanced to support the
+COCONUT-SVSM code base. 
+### 3.1 Prepare OVMF Tree
+To build the OVMF binary for the guest, checkout
+this repository:
+
+```
+$ git clone --recursive -b tdp-vtpm --depth 1 https://github.com/gaojiaqi7/virtualization.hypervisors.tdp.ovmf.git
+```
+
+### 3.2 Build OVMF
+Then go back to the EDK2 source directory and follow the steps below to
+build the firmware. `-D TPM2_ENABLE` is required only if you want to use
+the SVSM vTPM, now it's default enabled.
+
+```
+$ export PYTHON3_ENABLE=TRUE
+$ export PYTHON_COMMAND=python3
+$ make -C BaseTools clean && make -C BaseTools
+$ source ./edksetup.sh
+$ build -a X64 -b DEBUG -t GCC5 -D FD_SIZE_2MB -D DEBUG_ON_SERIAL_PORT -D DEBUG_VERBOSE -p OvmfPkg/OvmfPkgX64.dsc
+```
+
+This will build the OVMF code and variable binaries to use with QEMU.
+You can copy them to a known location after the build is complete:
+
+```
+$ cp Build/OvmfX64/DEBUG_GCC5/FV/OVMF.fd /path/to/firmware/
+```
+
+4 Preparing the SVSM image
+-------------------------
+
+The guest image for the SEV-SNP SVSM guest needs to have a kernel
+installed that supports the SVSM request protocol and running in a
+lower-privileged VMPL than VMPL0. If you already experimented with the
+linux-svsm you can re-use the guest image.
+
+
+### 4.1 Prepare SVSM Tree
+```
+$ git clone --recursive -b tdp-vtpm https://github.com/gaojiaqi7/td-partitioning-svsm
+$ cd td-partitioning-svsm
+```
+
+### 4.2 Prepare Guest Kernel
+Build a kernel from that branch and install it in the guest image. For
+the guest kernel configuration you can follow the same steps as for the
+host kernel. Best results are achieved by re-using the kernel
+configuration from the distribution like for the host kernel.
+
+The `CONFIG_TCG_PLATFORM` is required in the guest kernel if you want to
+use the SVSM vTPM.
+
+### 4.3 Building the COCONUT-SVSM
+-------------------------
+
+Building the SVSM itself requires:
+- A recent Rust compiler and build environment installed. Please refer to
+  [https://rustup.rs/](https://rustup.rs/) on how to get this environment installed.
+- `x86_64-unknown-none` target toolchain installed (`rustup target add x86_64-unknown-none`)
+- `binutils` >= 2.39
+- Use rustup toolchain `1.77.0-x86_64-unknown-linux-gnu`
+
+You may also need to install the Microsoft TPM build dependencies. Docker can be used to build SVSM.bin:
+
+```
+FROM ubuntu:24.04
+
+# Adding rust binaries to PATH.
+ENV PATH="$PATH:/root/.cargo/bin"
+WORKDIR /root
+
+# Install all required packages in one go to optimize the image
+# https://docs.docker.com/develop/develop-images/dockerfile_best-practices/#run
+# DEBIAN_FRONTEND is set for tzdata.
+RUN apt update && \
+    DEBIAN_FRONTEND="noninteractive" apt install --no-install-recommends -y \
+    build-essential unzip curl gcc git libssl-dev pkg-config ssh ca-certificates \
+    autoconf autoconf-archive automake pkg-config libclang-dev \
+    # cleanup
+&& apt-get clean && rm -rf /var/lib/apt/lists/*
+
+# Install rustup and a fixed version of Rust.
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs > /tmp/rustup-init.sh && \
+    sh /tmp/rustup-init.sh -y \
+        --default-toolchain 1.77.0-x86_64-unknown-linux-gnu \
+        --target x86_64-unknown-none && \
+    cargo install bindgen-cli
+
+RUN rustup override set 1.77.0-x86_64-unknown-linux-gnu
+```
+
+Then checkout the SVSM repository and build the SVSM binary:
+
+```
+$ git clone --recursive -b tdp-vtpm https://github.com/gaojiaqi7/td-partitioning-svsm
+$ cd td-partitioning-svsm
+$ cargo install bindgen-cli
+```
+
+That checks out the SVSM which can be built by
+
+```
+$ make
+```
+
+to get a debug build of the SVSM or
+
+```
+$ make RELEASE=1
+```
+
+to build the SVSM with the release target. When the build is finished
+there is the ```svsm.bin``` file in the top-directory of the repository. This
+is the file which needs to be passed to QEMU.
+
+The project also contains a number of unit-tests which can be run by
+
+```
+$ make test
+```
+
+Unit tests can be run inside the SVSM by
+
+```
+$ QEMU=/path/to/qemu OVMF=/path/to/firmware/ make test-in-svsm
+```
+
+5 Putting it all together
+-----------------------
+
+A complete QEMU command-line script may look like this:
+
+```
+# L1 QEMU: td_part_l1_qemu
+QEMU=<path-to-qemu-system-x86_64>/qemu-system-x86_64
+
+# L1 Kernel: td_part_l1_vmm
+KERNEL=bzImage
+
+# L1 BIOS: td_part_l1_ovmf
+BIOS=svsm.bin
+
+# L2 BIOS: td_part_l2_ovmf
+L2BIOS=OVMF.fd
+
+# Image: 
+Image=<path-to-Guest-OS>/td-guest-ubuntu-22.04-test.qcow2
+
+sudo $QEMU -m $MEMORY \
+        -nographic \
+        -vga none \
+        -smp ${CPU} \
+        -cpu host,host-phys-bits,pmu=off,pks=on \
+        -chardev stdio,id=mux,mux=on \
+        -device virtio-serial,romfile= \
+        -device virtconsole,chardev=mux -monitor chardev:mux \
+        -serial chardev:mux \
+        -bios ${BIOS} \
+        -kernel $KERNEL \
+        -drive if=virtio,format=qcow2,media=disk,index=0,file=${Image} \
+        -machine q35,accel=kvm,l2bios=${L2BIOS} \
+        -object tdx-guest,id=tdx0,num-l2-vms=1,svsm=on \
+        -machine kernel-irqchip=split,sata=off,pic=off,pit=off \
+        -machine confidential-guest-support=tdx0 \
+        -append "root=/dev/vda1 rw earlyprintk=ttyS0 console=hvc0 tdx_allow_acpi=TPM2,SSDT   
+        authorize_allow_devs=acpi:MSFT8215 nomce no-kvmclock no-steal-acc ignore_loglevel nopat memmap=1023M\$1M 
+          memmap=2G\$4G"
+```
+
+If everything works, initialization messages of the SVSM should appear
+in the terminal:
+
+```
+[Stage2] COCONUT Secure Virtual Machine Service Module (SVSM) Stage 2 Loader
+[Stage2] Mapping kernel region 0xffffff8000000000-0xffffff8010000000 to 0x0000008000000000
+[Stage2] Order-00: total pages:    11 free pages:     1
+[Stage2] Order-01: total pages:     2 free pages:     1
+[Stage2] Order-02: total pages:     0 free pages:     0
+[Stage2] Order-03: total pages:     1 free pages:     1
+[Stage2] Order-04: total pages:     2 free pages:     2
+[Stage2] Order-05: total pages:     2 free pages:     2
+[Stage2] Total memory: 476KiB free memory: 428KiB
+[Stage2]   kernel_physical_start = 0x0000008000000000
+[Stage2]   kernel_physical_end   = 0x0000008010000000
+[Stage2]   kernel_virtual_base   = 0xffffff8000000000
+[Stage2]   cpuid_page            = 0x000000000009f000
+[Stage2]   secrets_page          = 0x000000000009e000
+[Stage2] Launching SVSM kernel...
+[SVSM] COCONUT Secure Virtual Machine Service Module (SVSM)
+[SVSM] Order-00: total pages:    22 free pages:     0
+[SVSM] Order-01: total pages:     2 free pages:     1
+[SVSM] Order-02: total pages:     0 free pages:     0
+[SVSM] Order-03: total pages:     1 free pages:     1
+[SVSM] Order-04: total pages:     0 free pages:     0
+[SVSM] Order-05: total pages:  2042 free pages:  2042
+[SVSM] Total memory: 261512KiB free memory: 261416KiB
+[SVSM] Boot stack starts        @ 0xffffff800001b000
+[SVSM] BSP Runtime stack starts @ 0xffffff0000204000
+[SVSM] Guest Memory Regions:
+[SVSM]   000000000000000000-000000000080000000
+[SVSM]   000000000100000000-000000000270000000
+[SVSM] 8 CPU(s) present
+...
+```
+
+After boot to the Guest OS, you will see `tpm` in `/dev`
+
+6 Debugging using GDB
+-------------------
+
+The SVSM can be built to incorporate a GDB stub that can be used to provide full
+source-level debugging of the SVSM kernel code. To enable the GDB stub pass
+```FEATURES=enable-gdb``` to the ```make``` comannd line:
+
+```
+$ make FEATURES=enable-gdb
+```
+
+The GDB stub remains dormant until a CPU exception occurs, either through a
+kernel panic or via a debug breakpoint, at which time the GDB stub will await a
+serial port connection and display this message in the console:
+
+```
+[SVSM] ***********************************
+[SVSM] * Waiting for connection from GDB *
+[SVSM] ***********************************
+```
+
+The GDB stub uses a hardware serial port at IO port 0x2f8, which is the second
+simulated serial port in the QEMU configuration. Using the example configuration
+above, the serial port is configured using:
+
+```
+  - serial pty
+```
+
+QEMU will create a virtual serial port on the host at `/dev/pts/[n]` where `[n]`
+is the device index. This index will be reported by QEMU in the console when the
+virtual machine is started. You can then connect GDB to the waiting SVSM using
+the command, replacing `[n]` with the correct device index:
+
+```
+$ sudo gdb --ex "target extended-remote /dev/pts/[n]`
+```
+
+If you have the source code available on the host system then you can add the
+debug symbols and use source-level debugging:
+
+```
+(gdb) symbol-file target/x86_64-unknown-none/debug/svsm
+```
+
+Note that some GDB features are not available for debugging the SVSM kernel due
+to limited debug capabilities inside an AMD SEV-SNP confidential container. Some
+of these limitations may be addressed in future updates.
+
+* Hardware breakpoints and watchpoints are not yet supported.
+* Interrupting a running kernel with Ctrl-C is not possible. You must insert a
+  forced breakpoint in the code to enter the debugger before stepping through
+  target code.
+* Debugging is currently limited to the SVSM kernel itself. OVMF and the guest
+  OS cannot be debugged using the SVSM GDB stub.
+
+
+
+Have a lot of fun!
