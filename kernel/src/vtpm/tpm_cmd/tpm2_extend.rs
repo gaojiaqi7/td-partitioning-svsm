@@ -54,7 +54,7 @@ pub fn tpm2_pcr_extend_cmd(
     }
 
     let mut digests_value_buffer: [u8; MAX_TPM2_DIGESTS_SIZE] = [0; MAX_TPM2_DIGESTS_SIZE];
-    let digests_value = digests.to_bytes(&mut digests_value_buffer);
+    let digests_value = digests.to_be_bytes(&mut digests_value_buffer);
     if digests_value.is_none() {
         return Err(SvsmError::Tpm(TpmError::Unexpected));
     }

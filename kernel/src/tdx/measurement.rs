@@ -6,7 +6,9 @@ extern crate alloc;
 use crate::mm::alloc::{allocate_page, free_page};
 use alloc::boxed::Box;
 use alloc::string::String;
-use alloc::vec::Vec;
+use alloc::{vec, vec::Vec};
+use sha1::Sha1;
+use sha2::Sha256;
 
 use super::tdvf::get_tdvf_sec_fv;
 use crate::address::PhysAddr;
@@ -16,7 +18,8 @@ use crate::mm::{PerCPUPageMappingGuard, PAGE_SIZE};
 use crate::tdx::error::TdxError;
 use crate::vtpm::tpm_cmd::tpm2_command::Tpm2ResponseHeader;
 use crate::vtpm::tpm_cmd::tpm2_digests::{
-    Tpm2Digest, Tpm2Digests, TPM2_HASH_ALG_ID_SHA384, TPM2_SHA384_SIZE,
+    Tpm2Digest, Tpm2Digests, TPM2_HASH_ALG_ID_SHA1, TPM2_HASH_ALG_ID_SHA256,
+    TPM2_HASH_ALG_ID_SHA384, TPM2_SHA1_SIZE, TPM2_SHA256_SIZE, TPM2_SHA384_SIZE,
 };
 use crate::vtpm::tpm_cmd::tpm2_extend::{tpm2_pcr_extend_cmd, MAX_TPM_PCR_EXTEND_CMD_SIZE};
 use crate::vtpm::tpm_cmd::{
@@ -47,7 +50,8 @@ pub const VRTM_BFV_EVENT_GUID: [u8; 16] = [
 pub const VRTM_SVSM_VERSION_GUID: [u8; 16] = [
     0xBC, 0xE0, 0x8A, 0x6B, 0x8D, 0x87, 0x8D, 0x44, 0xB4, 0x30, 0x40, 0xF6, 0x00, 0x77, 0x3A, 0x96,
 ];
-
+const EV_S_CRTM_VERSION: u32 = 0x00000008;
+const EV_EFI_PLATFORM_FIRMWARE_BLOB2: u32 = 0x8000_000A;
 static mut VRTM_MEASUREMENT_STATE: RtmMeasurementState = RtmMeasurementState::new();
 
 struct RtmMeasurementState {
@@ -69,6 +73,31 @@ impl RtmMeasurementState {
 
     fn state(&self) -> &[u8] {
         &self.state[..self.size]
+    }
+
+    fn write_event(
+        &mut self,
+        name: &[u8; 16],
+        pcr_index: u32,
+        event_type: u32,
+        digests: &Tpm2Digests,
+        event_data: &[u8],
+    ) -> Result<(), SvsmError> {
+        self.write(name)?;
+        let event_data_size = event_data.len();
+        let len = size_of::<u32>() * 3 // PCR index, event type, digest count
+            + digests.total_size
+            + size_of::<u32>() // Event data size
+            + event_data.len();
+        self.write(&(len as u32).to_le_bytes())?;
+        self.write(&pcr_index.to_le_bytes())?;
+        self.write(&event_type.to_le_bytes())?;
+        self.write(&(digests.digests_count as u32).to_le_bytes())?;
+        digests
+            .to_le_bytes(self.get_unused_mut(digests.total_size)?)
+            .ok_or(SvsmError::Tdx(TdxError::Measurement))?;
+        self.write(&(event_data.len() as u32).to_le_bytes())?;
+        self.write(event_data)
     }
 
     fn write(&mut self, data: &[u8]) -> Result<(), SvsmError> {
@@ -146,6 +175,35 @@ impl UefiPlatformFirmwareBlob2 {
 
 pub const EV_SEPARATOR: u32 = 0x0000_0004;
 
+fn hash_sha1(hash_data: &[u8], digest_sha1: &mut [u8; TPM2_SHA1_SIZE]) -> Result<(), SvsmError> {
+    let mut digest = Sha1::new();
+    digest.update(hash_data);
+    let digest = digest.finalize();
+
+    if digest.len() != TPM2_SHA1_SIZE {
+        Err(SvsmError::Tdx(TdxError::Measurement))
+    } else {
+        digest_sha1.clone_from_slice(digest.as_slice());
+        Ok(())
+    }
+}
+
+fn hash_sha256(
+    hash_data: &[u8],
+    digest_sha256: &mut [u8; TPM2_SHA256_SIZE],
+) -> Result<(), SvsmError> {
+    let mut digest = Sha256::new();
+    digest.update(hash_data);
+    let digest = digest.finalize();
+
+    if digest.len() != TPM2_SHA256_SIZE {
+        Err(SvsmError::Tdx(TdxError::Measurement))
+    } else {
+        digest_sha256.clone_from_slice(digest.as_slice());
+        Ok(())
+    }
+}
+
 fn hash_sha384(
     hash_data: &[u8],
     digest_sha384: &mut [u8; TPM2_SHA384_SIZE],
@@ -220,26 +278,46 @@ fn tpm_extend(digests: &Tpm2Digests) -> Result<(), SvsmError> {
     }
 }
 
-pub fn extend_svsm_version() -> Result<(), SvsmError> {
-    let version = String::from(env!("CARGO_PKG_VERSION")) + "\0";
-    let mut svsm_version_digests = Tpm2Digests::new();
+fn create_digests(data: &[u8]) -> Result<Tpm2Digests, SvsmError> {
+    let mut tpm2_digests = Tpm2Digests::new();
+    let mut digest_sha1 = [0u8; TPM2_SHA1_SIZE];
+    let mut digest_sha256 = [0u8; TPM2_SHA256_SIZE];
     let mut digest_sha384 = [0u8; TPM2_SHA384_SIZE];
 
-    hash_sha384(version.as_bytes(), &mut digest_sha384)?;
+    hash_sha1(data, &mut digest_sha1);
+    hash_sha256(data, &mut digest_sha256)?;
+    hash_sha384(data, &mut digest_sha384)?;
 
-    svsm_version_digests.push_digest(
-        &Tpm2Digest::new(TPM2_HASH_ALG_ID_SHA384, &digest_sha384[..])
-            .ok_or(SvsmError::Tdx(TdxError::Measurement))?,
-    )?;
+    let tpm2_digest_sha1 = Tpm2Digest::new(TPM2_HASH_ALG_ID_SHA1, &digest_sha1[..])
+        .ok_or(SvsmError::Tpm(TpmError::Unexpected))?;
+    let tpm2_digest_sha256 = Tpm2Digest::new(TPM2_HASH_ALG_ID_SHA256, &digest_sha256[..])
+        .ok_or(SvsmError::Tpm(TpmError::Unexpected))?;
+    let tpm2_digest_sha384 = Tpm2Digest::new(TPM2_HASH_ALG_ID_SHA384, &digest_sha384[..])
+        .ok_or(SvsmError::Tpm(TpmError::Unexpected))?;
+    tpm2_digests.push_digest(&tpm2_digest_sha1)?;
+    tpm2_digests.push_digest(&tpm2_digest_sha256)?;
+    tpm2_digests.push_digest(&tpm2_digest_sha384)?;
 
-    tpm_extend(&svsm_version_digests)?;
+    Ok(tpm2_digests)
+}
+
+pub fn extend_svsm_version() -> Result<(), SvsmError> {
+    let version = String::from(env!("CARGO_PKG_VERSION")) + "\0";
+    let digests = create_digests(version.as_bytes())?;
+
+    tpm_extend(&digests)?;
 
     unsafe {
-        VRTM_MEASUREMENT_STATE.write(&VRTM_SVSM_VERSION_GUID)?;
-        VRTM_MEASUREMENT_STATE.write(&digest_sha384)?;
-        VRTM_MEASUREMENT_STATE.write(&(version.as_bytes().len() as u32).to_le_bytes())?;
-        VRTM_MEASUREMENT_STATE.write(version.as_bytes())
+        VRTM_MEASUREMENT_STATE.write_event(
+            &VRTM_SVSM_VERSION_GUID,
+            0,
+            EV_S_CRTM_VERSION,
+            &digests,
+            version.as_bytes(),
+        )?;
     }
+
+    Ok(())
 }
 
 fn extend_tdvf_sec() -> Result<(), SvsmError> {
@@ -256,27 +334,28 @@ fn extend_tdvf_sec() -> Result<(), SvsmError> {
     // of the slice elements is `u8` so there are no alignment requirements.
     let mem: &[u8] = unsafe { core::slice::from_raw_parts(vstart, PAGE_SIZE) };
 
-    let mut digest = [0u8; TPM2_SHA384_SIZE];
-    hash_sha384(mem, &mut digest)?;
-    let tpm2_digest = Tpm2Digest::new(TPM2_HASH_ALG_ID_SHA384, &digest[..])
-        .ok_or(SvsmError::Tpm(TpmError::Unexpected))?;
-    let mut digests = Tpm2Digests::new();
-    digests.push_digest(&tpm2_digest)?;
-
+    let digests = create_digests(mem)?;
     tpm_extend(&digests)?;
 
     // Put the firmware volume information into the event
     let fw_blob =
         UefiPlatformFirmwareBlob2::new(PLATFORM_BLOB_DESC, base.bits() as u64, len as u64)
             .ok_or(SvsmError::Tdx(TdxError::Measurement))?;
+    let fw_blob_size = fw_blob.size();
+    let mut fw_blob_bytes = vec![0u8; fw_blob_size];
+    fw_blob
+        .write_in_bytes(&mut fw_blob_bytes)
+        .ok_or(SvsmError::Tdx(TdxError::Measurement));
 
     // Record the firmware blob event
     unsafe {
-        VRTM_MEASUREMENT_STATE.write(&VRTM_BFV_EVENT_GUID)?;
-        VRTM_MEASUREMENT_STATE.write(&digest)?;
-        let fw_blob_size = fw_blob.size();
-        VRTM_MEASUREMENT_STATE.write(&(fw_blob_size as u32).to_le_bytes())?;
-        fw_blob.write_in_bytes(VRTM_MEASUREMENT_STATE.get_unused_mut(fw_blob_size)?);
+        VRTM_MEASUREMENT_STATE.write_event(
+            &VRTM_BFV_EVENT_GUID,
+            0,
+            EV_EFI_PLATFORM_FIRMWARE_BLOB2,
+            &digests,
+            &fw_blob_bytes,
+        )?;
     }
 
     Ok(())

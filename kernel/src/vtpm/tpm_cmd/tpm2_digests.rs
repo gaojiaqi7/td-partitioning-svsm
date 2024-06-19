@@ -51,6 +51,7 @@ impl Tpm2Digest {
 
     fn get_hash_size(alg_id: u16) -> Option<usize> {
         match alg_id {
+            TPM2_HASH_ALG_ID_SHA1 => Some(TPM2_SHA1_SIZE),
             TPM2_HASH_ALG_ID_SHA256 => Some(TPM2_SHA256_SIZE),
             TPM2_HASH_ALG_ID_SHA384 => Some(TPM2_SHA384_SIZE),
             TPM2_HASH_ALG_ID_SHA512 => Some(TPM2_SHA512_SIZE),
@@ -68,12 +69,24 @@ impl Tpm2Digest {
         Tpm2Digest::new(alg_id, &bytes[2..hash_size + 2])
     }
 
-    pub fn to_bytes(&self, out_buffer: &mut [u8]) -> Option<usize> {
+    pub fn to_le_bytes(&self, out_buffer: &mut [u8]) -> Option<usize> {
+        self.to_bytes(false, out_buffer)
+    }
+
+    pub fn to_be_bytes(&self, out_buffer: &mut [u8]) -> Option<usize> {
+        self.to_bytes(true, out_buffer)
+    }
+
+    fn to_bytes(&self, big_endian: bool, out_buffer: &mut [u8]) -> Option<usize> {
         if out_buffer.len() < self.total_size {
             return None;
         }
 
-        out_buffer[..2].copy_from_slice(&self.alg_id.to_be_bytes());
+        if big_endian {
+            out_buffer[..2].copy_from_slice(&self.alg_id.to_be_bytes());
+        } else {
+            out_buffer[..2].copy_from_slice(&self.alg_id.to_le_bytes());
+        }
         out_buffer[2..self.hash_size + 2].copy_from_slice(&self.hash[..self.hash_size]);
 
         Some(self.total_size)
@@ -127,7 +140,15 @@ impl Tpm2Digests {
         Some(digests)
     }
 
-    pub fn to_bytes(&self, out_buffer: &mut [u8]) -> Option<usize> {
+    pub fn to_le_bytes(&self, out_buffer: &mut [u8]) -> Option<usize> {
+        self.to_bytes(false, out_buffer)
+    }
+
+    pub fn to_be_bytes(&self, out_buffer: &mut [u8]) -> Option<usize> {
+        self.to_bytes(true, out_buffer)
+    }
+
+    fn to_bytes(&self, big_endian: bool, out_buffer: &mut [u8]) -> Option<usize> {
         let mut offset: usize = 0;
         let out_buffer_size = out_buffer.len();
         let mut tmp_buffer: [u8; MAX_TPM2_HASH_SIZE + 2] = [0; MAX_TPM2_HASH_SIZE + 2];
@@ -140,7 +161,11 @@ impl Tpm2Digests {
             if digest.total_size > out_buffer_size - offset {
                 return None;
             }
-            let size = digest.to_bytes(&mut tmp_buffer)?;
+            let size = if big_endian {
+                digest.to_be_bytes(&mut tmp_buffer)?
+            } else {
+                digest.to_le_bytes(&mut tmp_buffer)?
+            };
             out_buffer[offset..offset + digest.total_size].copy_from_slice(&tmp_buffer[..size]);
             offset += digest.total_size;
         }
