@@ -78,6 +78,10 @@ impl<'a> CertificateBuilder<'a> {
         Ok(())
     }
 
+    pub fn set_signature(&mut self, signature: &'a [u8]) -> Result<(()), X509Error> {
+        self.0.set_signature(signature)
+    }
+
     pub fn sign(
         &mut self,
         signature: &'a mut alloc::vec::Vec<u8>,
@@ -90,8 +94,8 @@ impl<'a> CertificateBuilder<'a> {
         Ok(())
     }
 
-    pub fn build(self) -> Certificate<'a> {
-        self.0
+    pub fn build(&self) -> &Certificate<'a> {
+        &self.0
     }
 }
 
@@ -712,3 +716,15 @@ impl<'a> Sequence<'a> for Extension<'a> {
 }
 
 pub type ExtendedKeyUsage = alloc::vec::Vec<ObjectIdentifier>;
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Sequence)]
+pub struct EcdsaPublicKeyDer<'a> {
+    pub x: UIntBytes<'a>,
+    pub y: UIntBytes<'a>,
+}
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Sequence)]
+pub struct EcdsaSignatureDer<'a> {
+    pub r: UIntBytes<'a>,
+    pub s: UIntBytes<'a>,
+}

@@ -27,6 +27,18 @@ pub struct EndorsementKey {
     pub public_key: Vec<u8>,
 }
 
+impl EndorsementKey {
+    fn new(handle: u32, point_x: &[u8], point_y: &[u8]) -> Self {
+        let mut public_key = Vec::new();
+        // TPM supports uncompressed form only
+        public_key.push(0x04);
+        public_key.extend_from_slice(point_x);
+        public_key.extend_from_slice(point_y);
+
+        Self { handle, public_key }
+    }
+}
+
 pub fn create_tpm_ek() -> Result<Vec<u8>, SvsmError> {
     // Set the handle to the global data
     Ok(TPM_EK
@@ -81,15 +93,12 @@ fn create_tpm_ek_ec384() -> Result<EndorsementKey, SvsmError> {
     let primary_response = create_primary(TPM2_RH_ENDORSEMENT, &public_area)?;
 
     // Parse the public key from response
-    let public_key = parse_public_area(&primary_response.public_area)?;
+    let (x, y) = parse_public_area(&primary_response.public_area)?;
 
-    Ok(EndorsementKey {
-        handle: primary_response.handle,
-        public_key,
-    })
+    Ok(EndorsementKey::new(primary_response.handle, &x, &y))
 }
 
-pub(crate) fn parse_public_area(public_area: &[u8]) -> Result<Vec<u8>, SvsmError> {
+pub(crate) fn parse_public_area(public_area: &[u8]) -> Result<(Vec<u8>, Vec<u8>), SvsmError> {
     if public_area.len() < 4 {
         return Err(SvsmError::Tpm(TpmError::EndorsementKey));
     }
@@ -156,13 +165,13 @@ pub(crate) fn parse_public_area(public_area: &[u8]) -> Result<Vec<u8>, SvsmError
     // Extract X and Y coordinates from unique field
     let x_offset = unique_offset;
     let x_size = u16::from_be_bytes([public_area[x_offset], public_area[x_offset + 1]]) as usize;
-    let mut public_key = public_area[x_offset + 2..x_offset + 2 + x_size].to_vec();
+    let x = public_area[x_offset + 2..x_offset + 2 + x_size].to_vec();
 
     let y_offset = x_offset + 2 + x_size;
     let y_size = u16::from_be_bytes([public_area[y_offset], public_area[y_offset + 1]]) as usize;
-    public_key.extend(&public_area[y_offset + 2..y_offset + 2 + y_size]);
+    let y = public_area[y_offset + 2..y_offset + 2 + y_size].to_vec();
 
-    Ok(public_key)
+    Ok((x, y))
 }
 
 pub fn provision_ek_cert(cert: &[u8]) -> Result<(), SvsmError> {

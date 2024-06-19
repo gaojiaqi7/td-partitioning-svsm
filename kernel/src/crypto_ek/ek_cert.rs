@@ -3,9 +3,9 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 extern crate alloc;
-use alloc::vec;
+use alloc::{vec, vec::Vec};
 
-use der::asn1::{BitString, ObjectIdentifier, OctetString, SetOfVec, Utf8String};
+use der::asn1::{BitString, ObjectIdentifier, OctetString, SetOfVec, UIntBytes, Utf8String};
 use der::{Any, Encodable, Tag};
 
 use crate::crypto_ek::resolve::{ResolveError, ID_EC_PUBKEY_OID, SECP384R1_OID};
@@ -33,6 +33,8 @@ use sha1::Sha1;
 
 #[cfg(feature = "sha2")]
 use sha2::{Digest, Sha384};
+
+use super::x509::{CertificateBuilder, EcdsaPublicKeyDer, EcdsaSignatureDer};
 
 fn hash_sha1(hash_data: &[u8], digest_sha1: &mut [u8; TPM2_SHA1_SIZE]) -> Result<(), ResolveError> {
     let mut digest = Sha1::new();
@@ -69,14 +71,8 @@ pub fn generate_ca_cert(
     td_quote: &[u8],
     event_log: &[u8],
     ecdsa_keypair: &EcdsaSigningKey,
-) -> Result<alloc::vec::Vec<u8>, ResolveError> {
-    let mut sig_buf: alloc::vec::Vec<u8> = alloc::vec::Vec::new();
-    let signer = |data: &[u8], sig_buf: &mut alloc::vec::Vec<u8>| {
-        let mut digest = [0u8; TPM2_SHA384_SIZE];
-        hash_sha384(data, &mut digest).expect("Failed to hash");
-        let signature = ecdsa_sign(ecdsa_keypair, &digest[..]).expect("Failed to sign");
-        sig_buf.extend_from_slice(&signature[..]);
-    };
+) -> Result<Vec<u8>, ResolveError> {
+    let mut sig_buf: Vec<u8> = Vec::new();
 
     // Generate x.509 certificate
     let algorithm = AlgorithmIdentifier {
@@ -90,23 +86,19 @@ pub fn generate_ca_cert(
     };
 
     // extended key usage
-    let eku: alloc::vec::Vec<ObjectIdentifier> = vec![VTPMTD_CA_EXTENDED_KEY_USAGE];
+    let eku: Vec<ObjectIdentifier> = vec![VTPMTD_CA_EXTENDED_KEY_USAGE];
     let eku = eku
         .to_vec()
         .map_err(|e| ResolveError::GenerateCertificate(X509Error::DerEncoding(e)))?;
 
     // basic constrains
-    let basic_constrains: alloc::vec::Vec<bool> = vec![true];
+    let basic_constrains: Vec<bool> = vec![true];
     let basic_constrains = basic_constrains
         .to_vec()
         .map_err(|e| ResolveError::GenerateCertificate(X509Error::DerEncoding(e)))?;
 
-    let mut x509_certificate = x509::CertificateBuilder::new(
-        sig_alg,
-        algorithm,
-        ecdsa_keypair.public_key.as_slice(),
-        true,
-    )?;
+    let mut x509_certificate =
+        x509::CertificateBuilder::new(sig_alg, algorithm, &ecdsa_keypair.public_key, true)?;
     // 1970-01-01T00:00:00Z
     x509_certificate.set_not_before(core::time::Duration::new(0, 0))?;
     // 9999-12-31T23:59:59Z
@@ -132,15 +124,15 @@ pub fn generate_ca_cert(
         Some(false),
         Some(event_log),
     )?)?;
-    x509_certificate.sign(&mut sig_buf, signer)?;
-
+    let signature = certificate_sign(&mut x509_certificate, ecdsa_keypair)?;
+    x509_certificate.set_signature(&signature)?;
     let res = x509_certificate.build();
 
     res.to_vec()
         .map_err(|e| ResolveError::GenerateCertificate(X509Error::DerEncoding(e)))
 }
 
-fn gen_auth_key_identifier(ek_pub: &[u8]) -> Result<alloc::vec::Vec<u8>, ResolveError> {
+fn gen_auth_key_identifier(ek_pub: &[u8]) -> Result<Vec<u8>, ResolveError> {
     // authority key identifier
     let mut ek_pub_sha1 = [0u8; TPM2_SHA1_SIZE];
     let _ = hash_sha1(ek_pub, &mut ek_pub_sha1)?;
@@ -154,11 +146,11 @@ fn gen_auth_key_identifier(ek_pub: &[u8]) -> Result<alloc::vec::Vec<u8>, Resolve
         .map_err(|e| ResolveError::GenerateCertificate(X509Error::DerEncoding(e)))
 }
 
-fn gen_subject_alt_name() -> Result<alloc::vec::Vec<u8>, ResolveError> {
+fn gen_subject_alt_name() -> Result<Vec<u8>, ResolveError> {
     let tpm2_caps = tpm_property().expect("Failed to get TPM properties");
 
     let mut tcg_tpm_manufaturer = SetOfVec::new();
-    let mut manufacturer = alloc::vec::Vec::new();
+    let mut manufacturer = Vec::new();
     manufacturer.extend_from_slice(&tpm2_caps.manufacturer.to_be_bytes());
     let _ = tcg_tpm_manufaturer.add(DistinguishedName {
         attribute_type: TCG_TPM_MANUFACTURER,
@@ -166,7 +158,7 @@ fn gen_subject_alt_name() -> Result<alloc::vec::Vec<u8>, ResolveError> {
     });
 
     let mut tcg_tpm_model = SetOfVec::new();
-    let mut model = alloc::vec::Vec::new();
+    let mut model = Vec::new();
     model.extend_from_slice(&tpm2_caps.vendor_1.to_be_bytes());
     model.extend_from_slice(&tpm2_caps.vendor_2.to_be_bytes());
     model.extend_from_slice(&tpm2_caps.vendor_3.to_be_bytes());
@@ -177,7 +169,7 @@ fn gen_subject_alt_name() -> Result<alloc::vec::Vec<u8>, ResolveError> {
     });
 
     let mut tcg_tpm_version = SetOfVec::new();
-    let mut version = alloc::vec::Vec::new();
+    let mut version = Vec::new();
     version.extend_from_slice(&tpm2_caps.version_1.to_be_bytes());
     version.extend_from_slice(&tpm2_caps.version_2.to_be_bytes());
     let _ = tcg_tpm_version.add(DistinguishedName {
@@ -196,14 +188,9 @@ fn gen_subject_alt_name() -> Result<alloc::vec::Vec<u8>, ResolveError> {
 pub fn generate_ek_cert(
     ek_pub: &[u8],
     ecdsa_keypair: &EcdsaSigningKey,
-) -> Result<alloc::vec::Vec<u8>, ResolveError> {
-    let mut sig_buf: alloc::vec::Vec<u8> = alloc::vec::Vec::new();
-    let signer = |data: &[u8], sig_buf: &mut alloc::vec::Vec<u8>| {
-        let mut digest = [0u8; TPM2_SHA384_SIZE];
-        hash_sha384(data, &mut digest).expect("Failed to hash");
-        let signature = ecdsa_sign(ecdsa_keypair, &digest[..]).expect("Failed to sign");
-        sig_buf.extend_from_slice(&signature[..]);
-    };
+) -> Result<Vec<u8>, ResolveError> {
+    let mut sig_buf: Vec<u8> = Vec::new();
+    let signer = |data: &[u8], sig_buf: &mut Vec<u8>| {};
 
     // Generate x.509 certificate
     let algorithm = AlgorithmIdentifier {
@@ -217,13 +204,13 @@ pub fn generate_ek_cert(
     };
 
     // basic constrains
-    let basic_constrains: alloc::vec::Vec<bool> = vec![false];
+    let basic_constrains: Vec<bool> = vec![false];
     let basic_constrains = basic_constrains
         .to_vec()
         .map_err(|e| ResolveError::GenerateCertificate(X509Error::DerEncoding(e)))?;
 
     // extended key usage
-    let eku: alloc::vec::Vec<ObjectIdentifier> = vec![TCG_EK_CERTIFICATE];
+    let eku: Vec<ObjectIdentifier> = vec![TCG_EK_CERTIFICATE];
     let eku = eku
         .to_vec()
         .map_err(|e| ResolveError::GenerateCertificate(X509Error::DerEncoding(e)))?;
@@ -268,9 +255,34 @@ pub fn generate_ek_cert(
         Some(true),
         Some(subject_alt_name.as_slice()),
     )?)?;
-    x509_certificate.sign(&mut sig_buf, signer)?;
+    let signature = certificate_sign(&mut x509_certificate, ecdsa_keypair)?;
+    x509_certificate
+        .set_signature(&signature)
+        .map_err(|e| ResolveError::GenerateCertificate(e))?;
     let res = x509_certificate.build();
 
     res.to_vec()
         .map_err(|e| ResolveError::GenerateCertificate(X509Error::DerEncoding(e)))
+}
+
+fn certificate_sign(
+    cert: &CertificateBuilder<'_>,
+    key: &EcdsaSigningKey,
+) -> Result<Vec<u8>, ResolveError> {
+    let mut digest = [0u8; TPM2_SHA384_SIZE];
+    let tbs_der = cert
+        .build()
+        .tbs_certificate
+        .to_vec()
+        .map_err(|e| ResolveError::GenerateCertificate(X509Error::DerEncoding(e)))?;
+    hash_sha384(&tbs_der, &mut digest)?;
+    let (r, s) = ecdsa_sign(key, &digest[..]).map_err(|_| ResolveError::SignCertificate)?;
+    EcdsaSignatureDer {
+        r: UIntBytes::new(&r)
+            .map_err(|e| ResolveError::GenerateCertificate(X509Error::DerEncoding(e)))?,
+        s: UIntBytes::new(&r)
+            .map_err(|e| ResolveError::GenerateCertificate(X509Error::DerEncoding(e)))?,
+    }
+    .to_vec()
+    .map_err(|e| ResolveError::GenerateCertificate(X509Error::DerEncoding(e)))
 }

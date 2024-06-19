@@ -23,6 +23,18 @@ pub struct EcdsaSigningKey {
     pub public_key: Vec<u8>,
 }
 
+impl EcdsaSigningKey {
+    fn new(handle: u32, point_x: &[u8], point_y: &[u8]) -> Self {
+        let mut public_key = Vec::new();
+        // TPM supports uncompressed form only
+        public_key.push(0x04);
+        public_key.extend_from_slice(point_x);
+        public_key.extend_from_slice(point_y);
+
+        Self { handle, public_key }
+    }
+}
+
 pub fn create_ecdsa_signing_key() -> Result<EcdsaSigningKey, SvsmError> {
     let parent_handle = TPM_EK
         .lock()
@@ -78,14 +90,11 @@ pub fn create_ecdsa_signing_key() -> Result<EcdsaSigningKey, SvsmError> {
         }
     };
 
-    let public_key = parse_public_area(&response.public_area)?;
-    Ok(EcdsaSigningKey {
-        handle: response.handle,
-        public_key,
-    })
+    let (x, y) = parse_public_area(&response.public_area)?;
+    Ok(EcdsaSigningKey::new(response.handle, &x, &y))
 }
 
-pub fn ecdsa_sign(key: &EcdsaSigningKey, digest: &[u8]) -> Result<Vec<u8>, SvsmError> {
+pub fn ecdsa_sign(key: &EcdsaSigningKey, digest: &[u8]) -> Result<(Vec<u8>, Vec<u8>), SvsmError> {
     let sig_struct = sign(key.handle, digest, TPM_ALG_ECDSA, TPM_ALG_SHA384)?;
 
     // The first 4 bytes are: SIGNATURE ALG and HASH ALG
@@ -106,14 +115,11 @@ pub fn ecdsa_sign(key: &EcdsaSigningKey, digest: &[u8]) -> Result<Vec<u8>, SvsmE
 
     let r_offset = 4;
     let r_size = u16::from_be_bytes([sig_struct[r_offset], sig_struct[r_offset + 1]]) as usize;
-    let mut signature = sig_struct[r_offset + 2..r_offset + 2 + r_size].to_vec();
+    let r = sig_struct[r_offset + 2..r_offset + 2 + r_size].to_vec();
 
     let s_offset = r_offset + 2 + r_size;
     let s_size = u16::from_be_bytes([sig_struct[s_offset], sig_struct[s_offset + 1]]) as usize;
-    signature.extend(&sig_struct[s_offset + 2..s_offset + 2 + s_size]);
+    let s = sig_struct[s_offset + 2..s_offset + 2 + s_size].to_vec();
 
-    if signature.len() != ECDSA_SHA384_SIGNATURE_SIZE {
-        return Err(SvsmError::Tpm(TpmError::Unexpected));
-    }
-    Ok(signature)
+    Ok((r, s))
 }
