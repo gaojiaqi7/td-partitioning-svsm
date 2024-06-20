@@ -11,7 +11,6 @@ use sha1::Sha1;
 use sha2::Sha256;
 
 use super::tdvf::get_tdvf_sec_fv;
-use crate::address::PhysAddr;
 use crate::address::{Address, GuestPhysAddr};
 use crate::error::SvsmError;
 use crate::mm::{PerCPUPageMappingGuard, PAGE_SIZE};
@@ -35,7 +34,7 @@ const SHA384_DIGEST_SIZE: usize = 48;
 use crate::crypto_ek::ek_cert::{generate_ca_cert, generate_ek_cert};
 use crate::tdx::quote_generation;
 use crate::tdx::{tdcall_extend_rtmr, TdxDigest};
-use crate::vtpm::crypto::{create_ecdsa_signing_key, EcdsaSigningKey};
+use crate::vtpm::crypto::create_ecdsa_signing_key;
 use crate::vtpm::ek::{create_tpm_ek, provision_ca_cert, provision_ek_cert};
 
 #[cfg(feature = "sha2")]
@@ -84,7 +83,6 @@ impl RtmMeasurementState {
         event_data: &[u8],
     ) -> Result<(), SvsmError> {
         self.write(name)?;
-        let event_data_size = event_data.len();
         let len = size_of::<u32>() * 3 // PCR index, event type, digest count
             + digests.total_size
             + size_of::<u32>() // Event data size
@@ -284,7 +282,7 @@ fn create_digests(data: &[u8]) -> Result<Tpm2Digests, SvsmError> {
     let mut digest_sha256 = [0u8; TPM2_SHA256_SIZE];
     let mut digest_sha384 = [0u8; TPM2_SHA384_SIZE];
 
-    hash_sha1(data, &mut digest_sha1);
+    hash_sha1(data, &mut digest_sha1)?;
     hash_sha256(data, &mut digest_sha256)?;
     hash_sha384(data, &mut digest_sha384)?;
 
@@ -345,7 +343,7 @@ fn extend_tdvf_sec() -> Result<(), SvsmError> {
     let mut fw_blob_bytes = vec![0u8; fw_blob_size];
     fw_blob
         .write_in_bytes(&mut fw_blob_bytes)
-        .ok_or(SvsmError::Tdx(TdxError::Measurement));
+        .ok_or(SvsmError::Tdx(TdxError::Measurement))?;
 
     // Record the firmware blob event
     unsafe {
@@ -458,8 +456,8 @@ pub fn extend_separator() -> Result<Vec<u8>, SvsmError> {
 }
 
 pub fn generate_cert(event_log: &[u8]) -> Result<(), SvsmError> {
-    let mut ek_pub = create_tpm_ek()?;
-    let mut ecdsa_keypair = create_ecdsa_signing_key()?;
+    let ek_pub = create_tpm_ek()?;
+    let ecdsa_keypair = create_ecdsa_signing_key()?;
 
     let mut quote_buf = alloc::vec![0u8; PAGE_SIZE*2];
     let mut ecdsa_pub_sha384 = [0u8; TPM2_SHA384_SIZE];

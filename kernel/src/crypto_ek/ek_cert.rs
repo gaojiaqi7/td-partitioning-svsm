@@ -19,7 +19,7 @@ use crate::crypto_ek::x509::{
 };
 use crate::crypto_ek::x509::{AlgorithmIdentifier, X509Error};
 
-use crate::vtpm::capability::{tpm_property, Tpm2Property};
+use crate::vtpm::capability::tpm_property;
 use crate::vtpm::crypto::{ecdsa_sign, EcdsaSigningKey};
 use crate::vtpm::tpm_cmd::tpm2_digests::{TPM2_SHA1_SIZE, TPM2_SHA384_SIZE};
 
@@ -34,7 +34,7 @@ use sha1::Sha1;
 #[cfg(feature = "sha2")]
 use sha2::{Digest, Sha384};
 
-use super::x509::{CertificateBuilder, EcdsaPublicKeyDer, EcdsaSignatureDer};
+use super::x509::{CertificateBuilder, EcdsaSignatureDer};
 
 fn hash_sha1(hash_data: &[u8], digest_sha1: &mut [u8; TPM2_SHA1_SIZE]) -> Result<(), ResolveError> {
     let mut digest = Sha1::new();
@@ -72,8 +72,6 @@ pub fn generate_ca_cert(
     event_log: &[u8],
     ecdsa_keypair: &EcdsaSigningKey,
 ) -> Result<Vec<u8>, ResolveError> {
-    let mut sig_buf: Vec<u8> = Vec::new();
-
     // Generate x.509 certificate
     let algorithm = AlgorithmIdentifier {
         algorithm: ID_EC_PUBKEY_OID,
@@ -189,9 +187,6 @@ pub fn generate_ek_cert(
     ek_pub: &[u8],
     ecdsa_keypair: &EcdsaSigningKey,
 ) -> Result<Vec<u8>, ResolveError> {
-    let mut sig_buf: Vec<u8> = Vec::new();
-    let signer = |data: &[u8], sig_buf: &mut Vec<u8>| {};
-
     // Generate x.509 certificate
     let algorithm = AlgorithmIdentifier {
         algorithm: ID_EC_PUBKEY_OID,
@@ -280,7 +275,7 @@ fn certificate_sign(
     EcdsaSignatureDer {
         r: UIntBytes::new(&r)
             .map_err(|e| ResolveError::GenerateCertificate(X509Error::DerEncoding(e)))?,
-        s: UIntBytes::new(&r)
+        s: UIntBytes::new(&s)
             .map_err(|e| ResolveError::GenerateCertificate(X509Error::DerEncoding(e)))?,
     }
     .to_vec()

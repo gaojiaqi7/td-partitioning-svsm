@@ -68,7 +68,7 @@ impl<'a> CertificateBuilder<'a> {
         Ok(())
     }
 
-    pub fn add_extension(&mut self, extension: Extension<'a>) -> Result<(()), X509Error> {
+    pub fn add_extension(&mut self, extension: Extension<'a>) -> Result<(), X509Error> {
         if let Some(extn) = self.0.tbs_certificate.extensions.as_mut() {
             extn.0.push(extension);
         } else {
@@ -78,7 +78,7 @@ impl<'a> CertificateBuilder<'a> {
         Ok(())
     }
 
-    pub fn set_signature(&mut self, signature: &'a [u8]) -> Result<(()), X509Error> {
+    pub fn set_signature(&mut self, signature: &'a [u8]) -> Result<(), X509Error> {
         self.0.set_signature(signature)
     }
 
@@ -290,7 +290,7 @@ impl<'a> Sequence<'a> for TBSCertificate<'a> {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AuthorityKeyIdentifier<'a>(pub OctetString<'a>);
 
-impl<'a> Encodable for AuthorityKeyIdentifier<'a> {
+impl Encodable for AuthorityKeyIdentifier<'_> {
     fn encoded_len(&self) -> der::Result<der::Length> {
         let len = self.0.encoded_len()?;
         let explicit = Header::new(
@@ -320,7 +320,7 @@ impl<'a> Encodable for AuthorityKeyIdentifier<'a> {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SubjectAltName<'a>(pub alloc::vec::Vec<SetOfVec<DistinguishedName<'a>>>);
 
-impl<'a> Encodable for SubjectAltName<'a> {
+impl Encodable for SubjectAltName<'_> {
     fn encoded_len(&self) -> der::Result<der::Length> {
         let len = self.0.encoded_len()?;
         let explicit = Header::new(
@@ -357,7 +357,7 @@ impl<'a> Decodable<'a> for Version<'a> {
     }
 }
 
-impl<'a> Encodable for Version<'a> {
+impl Encodable for Version<'_> {
     fn encoded_len(&self) -> der::Result<der::Length> {
         let len = self.0.encoded_len()?;
         let explicit = Header::new(
@@ -384,7 +384,7 @@ impl<'a> Encodable for Version<'a> {
     }
 }
 
-impl<'a> Tagged for Version<'a> {
+impl Tagged for Version<'_> {
     fn tag(&self) -> Tag {
         Tag::ContextSpecific {
             constructed: true,
@@ -438,7 +438,7 @@ pub struct DistinguishedName<'a> {
     pub(crate) value: Any<'a>,
 }
 
-impl<'a> DerOrd for DistinguishedName<'a> {
+impl DerOrd for DistinguishedName<'_> {
     fn der_cmp(&self, other: &Self) -> der::Result<core::cmp::Ordering> {
         Ok(self.attribute_type.cmp(&other.attribute_type))
     }
@@ -557,7 +557,7 @@ impl<'a, const N: u8> Decodable<'a> for UniqueIdentifier<'a, N> {
     }
 }
 
-impl<'a, const N: u8> Encodable for UniqueIdentifier<'a, N> {
+impl<const N: u8> Encodable for UniqueIdentifier<'_, N> {
     fn encoded_len(&self) -> der::Result<der::Length> {
         let len = self.0.encoded_len()?;
         let explicit = Header::new(
@@ -584,7 +584,7 @@ impl<'a, const N: u8> Encodable for UniqueIdentifier<'a, N> {
     }
 }
 
-impl<'a, const N: u8> Tagged for UniqueIdentifier<'a, N> {
+impl<const N: u8> Tagged for UniqueIdentifier<'_, N> {
     fn tag(&self) -> Tag {
         Tag::ContextSpecific {
             constructed: true,
@@ -618,7 +618,7 @@ impl<'a> Decodable<'a> for Extensions<'a> {
     }
 }
 
-impl<'a> Encodable for Extensions<'a> {
+impl Encodable for Extensions<'_> {
     fn encoded_len(&self) -> der::Result<der::Length> {
         let len = self.0.encoded_len()?;
         let explicit = Header::new(
@@ -645,7 +645,7 @@ impl<'a> Encodable for Extensions<'a> {
     }
 }
 
-impl<'a> Tagged for Extensions<'a> {
+impl Tagged for Extensions<'_> {
     fn tag(&self) -> Tag {
         Tag::ContextSpecific {
             constructed: true,
@@ -716,12 +716,6 @@ impl<'a> Sequence<'a> for Extension<'a> {
 }
 
 pub type ExtendedKeyUsage = alloc::vec::Vec<ObjectIdentifier>;
-
-#[derive(Copy, Clone, Debug, Eq, PartialEq, Sequence)]
-pub struct EcdsaPublicKeyDer<'a> {
-    pub x: UIntBytes<'a>,
-    pub y: UIntBytes<'a>,
-}
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Sequence)]
 pub struct EcdsaSignatureDer<'a> {

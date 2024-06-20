@@ -2,13 +2,8 @@
 //
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use crate::crypto_ek::x509::Certificate;
-use crate::crypto_ek::x509::{self, Extension, X509Error};
-use crate::crypto_ek::x509::{AlgorithmIdentifier, ExtendedKeyUsage, Extensions};
-extern crate alloc;
-use alloc::vec;
+use crate::crypto_ek::x509::X509Error;
 use der::asn1::ObjectIdentifier;
-use der::{Any, Decodable, Encodable, Tag};
 
 #[derive(Debug, Clone, Copy)]
 pub enum Error {

@@ -11,7 +11,7 @@
 //! TDVMCALL (TDG.VP.VMCALL) is a leaf function 0 for TDCALL. It helps invoke services from
 //! the host VMM.
 
-use crate::address::{Address, VirtAddr};
+use crate::address::Address;
 use crate::mm::alloc::{allocate_page, free_page};
 use crate::mm::{virt_to_phys, PAGE_SIZE};
 
@@ -464,9 +464,8 @@ pub fn tdcall_get_td_info() -> Result<TdInfo, TdCallError> {
 ///
 /// Details can be found in TDX Module ABI spec section 'TDG.VP.INFO Leaf'
 pub fn tdcall_extend_rtmr(digest: &TdxDigest, mr_index: u32) -> Result<(), TdCallError> {
-    let mut page = allocate_page().expect("Failed to allocate memory page");
-    let mut slice: &mut [u8] =
-        unsafe { core::slice::from_raw_parts_mut(page.as_mut_ptr(), PAGE_SIZE) };
+    let page = allocate_page().expect("Failed to allocate memory page");
+    let slice = unsafe { core::slice::from_raw_parts_mut(page.as_mut_ptr(), PAGE_SIZE) };
     slice[..digest.data.len()].copy_from_slice(&digest.data);
     let buffer = virt_to_phys(page);
     let mut args = TdcallArgs {
