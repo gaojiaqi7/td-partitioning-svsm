@@ -76,4 +76,6 @@ pub enum TdxError {
     Attestation,
     // TPM/RTMR measurements error
     Measurement,
+    // TDVMCALL.Service error
+    Service,
 }

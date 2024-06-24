@@ -16,6 +16,7 @@ mod measurement;
 mod msr_bitmap;
 mod opcode;
 mod percpu;
+mod service;
 mod sirte;
 mod tdcall;
 mod tdp;

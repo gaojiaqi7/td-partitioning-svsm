@@ -3,15 +3,18 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 extern crate alloc;
+use crate::locking::SpinLock;
 use crate::mm::alloc::{allocate_page, free_page};
+use crate::utils::align_up;
 use alloc::boxed::Box;
 use alloc::string::String;
 use alloc::{vec, vec::Vec};
 use sha1::Sha1;
 use sha2::Sha256;
 
+use super::service::{TdVmcallServiceCommandHeader, TdVmcallServiceResponseHeader};
 use super::tdvf::get_tdvf_sec_fv;
-use crate::address::{Address, GuestPhysAddr};
+use crate::address::Address;
 use crate::error::SvsmError;
 use crate::mm::{PerCPUPageMappingGuard, PAGE_SIZE};
 use crate::tdx::error::TdxError;
@@ -29,6 +32,7 @@ use crate::vtpm::{vtpm_get_locked, MsTpmSimulatorInterface, TpmError};
 use cc_measurement::log::{CcEventLogError, CcEventLogReader, CcEventLogWriter};
 use cc_measurement::{CcEventHeader, TcgPcrEventHeader};
 use core::mem::size_of;
+use core::ptr::addr_of_mut;
 
 const SHA384_DIGEST_SIZE: usize = 48;
 use crate::crypto_ek::ek_cert::{generate_ca_cert, generate_ek_cert};
@@ -43,15 +47,19 @@ use sha2::{Digest, Sha384};
 const MAX_PLATFORM_BLOB_DESC_SIZE: usize = 255;
 const PLATFORM_BLOB_DESC: &[u8] = b"TDVF";
 pub const RTM_MEASUREMENT_STATE_SIZE: usize = 1024;
-pub const VRTM_BFV_EVENT_GUID: [u8; 16] = [
-    0x9D, 0x34, 0x5B, 0x8D, 0x38, 0xC8, 0x9A, 0x41, 0xBE, 0x58, 0x99, 0xDA, 0xBA, 0xB1, 0x52, 0x64,
-];
-pub const VRTM_SVSM_VERSION_GUID: [u8; 16] = [
-    0xBC, 0xE0, 0x8A, 0x6B, 0x8D, 0x87, 0x8D, 0x44, 0xB4, 0x30, 0x40, 0xF6, 0x00, 0x77, 0x3A, 0x96,
+pub const TCG_EVENT2_ENTRY_HOB_GUID: [u8; 16] = [
+    0x1e, 0x22, 0x6c, 0xd2, 0x30, 0x24, 0x8a, 0x4c, 0x91, 0x70, 0x3f, 0xcb, 0x45, 0x0, 0x41, 0x3f,
 ];
 const EV_S_CRTM_VERSION: u32 = 0x00000008;
 const EV_EFI_PLATFORM_FIRMWARE_BLOB2: u32 = 0x8000_000A;
-static mut VRTM_MEASUREMENT_STATE: RtmMeasurementState = RtmMeasurementState::new();
+const HOB_TYPE_GUID_EXTENSION: u16 = 0x0004;
+const HOB_TYPE_END_OF_HOB_LIST: u16 = 0xffff;
+const L1_VTPM_COMMAND_VERSION: u8 = 0x00;
+const L1_VTPM_COMMAND_DETECT: u8 = 0x01;
+const L1_VTPM_COMMAND_STATUS_SUCCESS: u8 = 0x00;
+const GUIDED_HOB_HEADER_SIZE: usize = 24;
+
+static VRTM_MEASUREMENT: SpinLock<RtmMeasurementState> = SpinLock::new(RtmMeasurementState::new());
 
 struct RtmMeasurementState {
     size: usize,
@@ -74,20 +82,33 @@ impl RtmMeasurementState {
         &self.state[..self.size]
     }
 
+    fn build_guided_hob_header(&mut self, data_len: usize) -> Result<usize, SvsmError> {
+        // Length of HOB shall be 8 bytes aligned
+        let aligned = align_up(data_len + GUIDED_HOB_HEADER_SIZE, 8);
+        // Type of HOB
+        self.write(&HOB_TYPE_GUID_EXTENSION.to_le_bytes())?;
+        // Lenght of HOB
+        self.write(&(aligned as u16).to_le_bytes())?;
+        // Reserved field
+        self.write(&0u32.to_le_bytes())?;
+        // GUID
+        self.write(&TCG_EVENT2_ENTRY_HOB_GUID)?;
+
+        Ok(aligned)
+    }
+
     fn write_event(
         &mut self,
-        name: &[u8; 16],
         pcr_index: u32,
         event_type: u32,
         digests: &Tpm2Digests,
         event_data: &[u8],
     ) -> Result<(), SvsmError> {
-        self.write(name)?;
-        let len = size_of::<u32>() * 3 // PCR index, event type, digest count
+        let event_len = size_of::<u32>() * 3 // PCR index, event type, digest count
             + digests.total_size
             + size_of::<u32>() // Event data size
             + event_data.len();
-        self.write(&(len as u32).to_le_bytes())?;
+        let hob_len = self.build_guided_hob_header(event_len)?;
         self.write(&pcr_index.to_le_bytes())?;
         self.write(&event_type.to_le_bytes())?;
         self.write(&(digests.digests_count as u32).to_le_bytes())?;
@@ -95,7 +116,19 @@ impl RtmMeasurementState {
             .to_le_bytes(self.get_unused_mut(digests.total_size)?)
             .ok_or(SvsmError::Tdx(TdxError::Measurement))?;
         self.write(&(event_data.len() as u32).to_le_bytes())?;
-        self.write(event_data)
+        self.write(event_data)?;
+        // padding zeros
+        let _ = self.get_unused_mut(hob_len - event_len - GUIDED_HOB_HEADER_SIZE)?;
+        Ok(())
+    }
+
+    fn finalize(&mut self) -> Result<(), SvsmError> {
+        // Type of HOB
+        self.write(&HOB_TYPE_END_OF_HOB_LIST.to_le_bytes())?;
+        // Lenght of HOB
+        self.write(&8u32.to_le_bytes())?;
+        // Reserved field
+        self.write(&0u32.to_le_bytes())
     }
 
     fn write(&mut self, data: &[u8]) -> Result<(), SvsmError> {
@@ -305,15 +338,8 @@ pub fn extend_svsm_version() -> Result<(), SvsmError> {
 
     tpm_extend(&digests)?;
 
-    unsafe {
-        VRTM_MEASUREMENT_STATE.write_event(
-            &VRTM_SVSM_VERSION_GUID,
-            0,
-            EV_S_CRTM_VERSION,
-            &digests,
-            version.as_bytes(),
-        )?;
-    }
+    let mut vrtm = VRTM_MEASUREMENT.lock();
+    vrtm.write_event(0, EV_S_CRTM_VERSION, &digests, version.as_bytes())?;
 
     Ok(())
 }
@@ -346,17 +372,8 @@ fn extend_tdvf_sec() -> Result<(), SvsmError> {
         .ok_or(SvsmError::Tdx(TdxError::Measurement))?;
 
     // Record the firmware blob event
-    unsafe {
-        VRTM_MEASUREMENT_STATE.write_event(
-            &VRTM_BFV_EVENT_GUID,
-            0,
-            EV_EFI_PLATFORM_FIRMWARE_BLOB2,
-            &digests,
-            &fw_blob_bytes,
-        )?;
-    }
-
-    Ok(())
+    let mut vrtm = VRTM_MEASUREMENT.lock();
+    vrtm.write_event(0, EV_EFI_PLATFORM_FIRMWARE_BLOB2, &digests, &fw_blob_bytes)
 }
 
 pub fn tdx_tpm_measurement_init() -> Result<(), SvsmError> {
@@ -376,29 +393,79 @@ pub fn tdx_tpm_measurement_init() -> Result<(), SvsmError> {
     extend_tdvf_sec()
 }
 
-pub fn handle_vrtm_request(
-    request_addr: GuestPhysAddr,
-    request_size: usize,
-) -> Result<(), SvsmError> {
-    let guard = PerCPUPageMappingGuard::create_4k(request_addr.to_host_phys_addr())?;
-    let vstart = guard.virt_addr().as_mut_ptr::<u8>();
+#[repr(C)]
+#[derive(Debug, Default)]
+struct L1VtpmCommand {
+    version: u8,
+    command: u8,
+    reserved: u16,
+}
 
-    // Safety: we just mapped a page, so the size must hold. The type
-    // of the slice elements is `u8` so there are no alignment requirements.
-    let response = unsafe { core::slice::from_raw_parts_mut(vstart, request_size) };
-
-    unsafe {
-        let event_data_size = VRTM_MEASUREMENT_STATE.size();
-        if response.len() < event_data_size {
-            return Err(SvsmError::Tdx(TdxError::Measurement));
+impl L1VtpmCommand {
+    fn read_from_bytes(bytes: &[u8]) -> Result<Self, TdxError> {
+        if bytes.len() < size_of::<Self>() {
+            return Err(TdxError::Service);
         }
-        let data_start = size_of::<u32>();
-        response[..data_start].copy_from_slice(&(event_data_size as u32).to_le_bytes());
-        response[data_start..data_start + event_data_size]
-            .copy_from_slice(VRTM_MEASUREMENT_STATE.state());
-    }
 
-    Ok(())
+        let mut header = Self::default();
+        unsafe {
+            core::slice::from_raw_parts_mut(addr_of_mut!(header) as *mut u8, size_of::<Self>())
+                .copy_from_slice(&bytes[..size_of::<Self>()])
+        }
+        Ok(header)
+    }
+}
+
+#[repr(C)]
+#[derive(Debug, Default)]
+struct L1VtpmResponse {
+    version: u8,
+    command: u8,
+    status: u8,
+    reserved: u8,
+}
+
+impl L1VtpmResponse {
+    fn as_bytes(&self) -> &[u8] {
+        unsafe { core::slice::from_raw_parts(self as *const _ as *const u8, size_of::<Self>()) }
+    }
+}
+
+pub fn handle_vtpm_request(command: &[u8], response: &mut [u8]) -> Result<usize, TdxError> {
+    let l1_vtpm_cmd =
+        L1VtpmCommand::read_from_bytes(&command[size_of::<TdVmcallServiceCommandHeader>()..])?;
+    match l1_vtpm_cmd.command {
+        L1_VTPM_COMMAND_DETECT => vtpm_detect(response),
+        _ => return Err(TdxError::Service),
+    }
+}
+
+fn vtpm_detect(response: &mut [u8]) -> Result<usize, TdxError> {
+    let mut length = size_of::<TdVmcallServiceResponseHeader>();
+    let l1_vtpm_resp = &mut response[length..];
+    let l1_vtpm_resp_header = L1VtpmResponse {
+        version: L1_VTPM_COMMAND_VERSION,
+        command: L1_VTPM_COMMAND_DETECT,
+        status: L1_VTPM_COMMAND_STATUS_SUCCESS,
+        reserved: 0,
+    };
+    l1_vtpm_resp[..size_of::<L1VtpmResponse>()].copy_from_slice(l1_vtpm_resp_header.as_bytes());
+    length += size_of::<L1VtpmResponse>();
+    let resp_data = &mut l1_vtpm_resp[size_of::<L1VtpmResponse>()..];
+
+    let mut vrtm = VRTM_MEASUREMENT.lock();
+    // Finalize the virtual RTM events, append a end of hob list.
+    vrtm.finalize().map_err(|_| TdxError::Service)?;
+
+    //
+    let events_size = vrtm.size();
+    if resp_data.len() < events_size {
+        return Err(TdxError::Measurement);
+    }
+    resp_data[..events_size].copy_from_slice(vrtm.state());
+    length += events_size;
+
+    Ok(length)
 }
 
 pub fn extend_rtmr(data: &[u8; SHA384_DIGEST_SIZE], mr_index: u32) -> Result<(), CcEventLogError> {
