@@ -6,6 +6,7 @@ pub mod tpm2_command;
 pub mod tpm2_create_loaded;
 pub mod tpm2_create_primary;
 pub mod tpm2_digests;
+pub mod tpm2_evict_control;
 pub mod tpm2_extend;
 pub mod tpm2_get_capability;
 pub mod tpm2_nvdefine;

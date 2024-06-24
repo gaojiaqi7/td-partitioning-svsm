@@ -8,6 +8,7 @@ extern crate alloc;
 
 use alloc::vec::Vec;
 use core::cell::OnceCell;
+use tpm2_evict_control::evict_control;
 
 use super::{
     tpm_cmd::{tpm2_nvdefine::nv_define_space, tpm2_nvwrite::nv_write, MAX_NV_INDEX_SIZE},
@@ -19,6 +20,7 @@ use crate::{
     vtpm::tpm_cmd::{tpm2_create_primary::create_primary, *},
 };
 
+pub(crate) const TPM2_EK_ECC_SECP384R1_HANDLE: u32 = 0x81010016;
 pub(crate) static TPM_EK: SpinLock<OnceCell<EndorsementKey>> = SpinLock::new(OnceCell::new());
 
 #[derive(Debug)]
@@ -94,6 +96,9 @@ fn create_tpm_ek_ec384() -> Result<EndorsementKey, SvsmError> {
 
     // Parse the public key from response
     let (x, y) = parse_public_area(&primary_response.public_area)?;
+
+    // Make EK persistent
+    evict_control(primary_response.handle, TPM2_EK_ECC_SECP384R1_HANDLE).unwrap();
 
     Ok(EndorsementKey::new(primary_response.handle, &x, &y))
 }
