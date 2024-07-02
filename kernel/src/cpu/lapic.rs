@@ -6,6 +6,7 @@
 
 use super::features::{cpu_has_feature, X86_FEATURE_X2APIC};
 use super::msr::{read_msr, write_msr};
+use crate::tdx::tdvmcall_wrmsr;
 use crate::utils::immut_after_init::ImmutAfterInitCell;
 
 const IA32_APIC_BASE: u32 = 0x1b;
@@ -83,10 +84,12 @@ impl LocalApic {
 
     pub fn send_ipi(&self, apic_id: u32, vec: u8) {
         if self.id() == apic_id {
-            write_msr(IA32_X2APIC_SELF_IPI, vec as u64).unwrap();
+            tdvmcall_wrmsr(IA32_X2APIC_SELF_IPI, vec as u64);
+            // write_msr(IA32_X2APIC_SELF_IPI, vec as u64).unwrap();
         } else {
             let icr = vec as u64 | APIC_ICR_PHYSICAL | ((apic_id as u64) << 32);
-            write_msr(IA32_X2APIC_ICR, icr).unwrap();
+            tdvmcall_wrmsr(IA32_X2APIC_ICR, icr);
+            // write_msr(IA32_X2APIC_ICR, icr).unwrap();
         }
     }
 

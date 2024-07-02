@@ -53,6 +53,20 @@ fn init_ist_vectors() {
         DF_VECTOR,
         IdtEntry::ist_entry(asm_entry_df, IST_DF.try_into().unwrap()),
     );
+
+    // Set IDT interrupt handlers
+    let handlers = unsafe { VirtAddr::from(core::ptr::addr_of!(interrupt_handler_array)) };
+    for vec in 32..256 {
+        idt_mut().set_entry(
+            vec,
+            IdtEntry::ist_entry(
+                unsafe {
+                    core::mem::transmute::<_, unsafe extern "C" fn()>(handlers + (64 * (vec - 32)))
+                },
+                IST_DF.try_into().unwrap(),
+            ),
+        );
+    }
 }
 
 pub fn early_idt_init() {
